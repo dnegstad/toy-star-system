@@ -1,0 +1,30 @@
+.Planet {
+    transform-box: fill-box;
+    stroke-width: 1px;
+    stroke: #c69c6d;
+    fill: #c69c6d;
+}
+
+.Planet.Planet-free {
+    stroke: orange;
+}
+
+.Planet.Planet-own {
+    stroke: rgb(13, 236, 13);
+}
+
+.Planet.Planet-other {
+    stroke: purple;
+}
+
+.Planet.Planet-barren {
+    fill: #999;
+}
+
+.Planet.Planet-volcanic {
+    fill: rgb(255, 18, 18);
+}
+
+.Planet.Planet-desert {
+    fill: rgb(253, 234, 64)
+}
