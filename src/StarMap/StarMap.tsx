@@ -469,7 +469,7 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
 
         const aspectRatio = initialWidth / initialHeight;
 
-        const oCamera = new Three.OrthographicCamera(-initialWidth / 2, initialHeight / 2, initialWidth / 2, -initialHeight / 2, 0.1, 10000);
+        const oCamera = new Three.OrthographicCamera(-initialWidth / 4, initialHeight / 4, initialWidth / 4, -initialHeight / 4, 0.1, 10000);
         oCamera.position.set(0, -Math.tan(Math.PI / 3) * 500, 500);
         oCamera.lookAt(0, 0, 0);
         oCamera.updateProjectionMatrix();
@@ -484,7 +484,7 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
         const scene = new Three.Scene();
 
         const ambientLight = new Three.AmbientLight();
-        ambientLight.intensity = 0.25;
+        ambientLight.intensity = 0.5;
 
         const blue = new Three.Mesh(geometry.stars.supergiant, materials.stars.blue);
         blue.position.set(0, 0, 0);
@@ -492,18 +492,21 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
         const yellow = new Three.Mesh(geometry.stars.medium, materials.stars.yellow);
         yellow.position.set(-100, 0, 0);
 
-        const giant = new Three.Mesh(geometry.planets.gasgiant, materials.planets.tundra);
-        giant.position.set(100, 100, 0);
-        giant.addEventListener('click', (e) => {
-            giant.position.y -= 100;
-        });
+        const giantGroup = new Three.Group();
+        const giantPlanetGroup = new Three.Group();
+        giantPlanetGroup.position.set(0, -200, 0);
+        giantGroup.add(giantPlanetGroup);
+
+        const giant = new Three.Mesh(geometry.planets.huge, materials.planets.gasgiant);
+        giantPlanetGroup.add(giant);
 
         const tinyGroup = new Three.Group();
 
         const tinyPlanetGroup = new Three.Group();
         tinyPlanetGroup.position.set(0, -100, 0);
+        tinyGroup.add(tinyPlanetGroup);
 
-        const tiny = new Three.Mesh(geometry.planets.gasgiant, materials.planets.ocean);
+        const tiny = new Three.Mesh(geometry.planets.tiny, materials.planets.ocean);
         tiny.visible = true;
         tinyPlanetGroup.add(tiny);
 
@@ -511,7 +514,7 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
             transparent: true,
             side: Three.DoubleSide,
         });
-        const tinyClouds = new Three.Mesh(geometry.planets.gasgiant, tinyCloudMaterial);
+        const tinyClouds = new Three.Mesh(tiny.geometry, tinyCloudMaterial);
         tinyClouds.scale.setScalar(1.01);
         tinyClouds.visible = false;
         tinyPlanetGroup.add(tinyClouds);
@@ -525,46 +528,51 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
         const pointLight = new Three.PointLight(new Three.Color('#537bff'));
         pointLight.intensity = 1;
         pointLight.position.set(0, 0, 0);
-        scene.add(pointLight);
 
-        tinyGroup.add(tinyPlanetGroup);
-        scene.add(tinyGroup);
+        scene.add(pointLight, tinyGroup, giantGroup, blue, ambientLight);
 
-        const cameraWorldPosition = new Three.Vector3();
-        //const pointLightWorldPosition = new Three.Vector3(250, 0, -500);
+        const giantWorldPosition = new Three.Vector3();
         const tinyWorldPosition = new Three.Vector3();
-        const pointLightWorldPosition = new Three.Vector3(0, 0, 500);
-        mainCamera.getWorldPosition(cameraWorldPosition);
-        //pointLight.getWorldPosition(pointLightWorldPosition);
+        giantPlanetGroup.getWorldPosition(giantWorldPosition);
         tinyPlanetGroup.getWorldPosition(tinyWorldPosition);
 
-        const tinyAtmosphereGeometry = new Three.SphereBufferGeometry(32, 128, 128);
-
         const stars = new Array<AtmosphereStar>({
-            position: new Three.Vector3(0, 0, 500),
+            position: new Three.Vector3(-Math.tan(Math.PI / 4) * 500, 0, 500),
             color: pointLight.color,
-            e: 14.5,
-        }, {
+            e: 25,
+        }/*, {
             position: new Three.Vector3(500, 0, 0),
-            color: new Three.Color('#ff4112'),
-            e: 9,
-        });
+            color: new Three.Color('red'),
+            e: 10,
+        }*/);
 
         const tinyAtmosphereMaterial = new AtmosphereMaterial({
-            outerRadius: 32,
-            innerRadius: 30,
+            outerRadius: 17,
+            innerRadius: 15,
             planetWorldPosition: tinyWorldPosition,
             wavelength: new Three.Vector3(0.3, 0.7, 1.0),
             kr: 0.0166,//0.166,
             km: 0.0025,//0.0025,
-            gravity: -0.75,
+            gravity: -0.9,
             stars,
         });
 
         const tinyAtmosphere = new Three.Mesh(tiny.geometry, tinyAtmosphereMaterial);
         tinyPlanetGroup.add(tinyAtmosphere);
 
-        scene.add(/*yellow, giant,*/blue, ambientLight);
+        const giantAtmosphereMaterial = new AtmosphereMaterial({
+            outerRadius: 29,
+            innerRadius: 27,
+            planetWorldPosition: giantWorldPosition,
+            wavelength: new Three.Vector3(0.3, 0.7, 1.0),
+            kr: 0.0166,
+            km: 0.0025,
+            gravity: -0.9,
+            stars,
+        });
+
+        const giantAtmosphere = new Three.Mesh(giant.geometry, giantAtmosphereMaterial);
+        giantPlanetGroup.add(giantAtmosphere);
 
         const backgroundScale = aspectRatio > backgroundAspectRatio
             ? new Three.Vector2(1, backgroundAspectRatio / aspectRatio)
@@ -589,10 +597,10 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
 
             renderer.setSize(newWidth, newHeight, false);
 
-            oCamera.left = -newWidth / 2;
-            oCamera.top = newHeight / 2;
-            oCamera.right = newWidth / 2;
-            oCamera.bottom = -newHeight / 2;
+            oCamera.left = -newWidth / 4;
+            oCamera.top = newHeight / 4;
+            oCamera.right = newWidth / 4;
+            oCamera.bottom = -newHeight / 4;
             oCamera.updateProjectionMatrix();
 
             pCamera.aspect = aspectRatio;
@@ -625,30 +633,16 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
                 giant.rotation.z += Math.PI * 2 / 10000 * delta;
                 tiny.rotation.z += Math.PI * 2 / 10000 * delta;
                 tinyClouds.rotation.z += Math.PI * 2 / 5000 * delta;
-                //tinyGroup.position.x += 1;
-                //tinyAtmosphere.updateMatrix();
                 tinyGroup.rotation.z += Math.PI * 2 / 10000 * delta;
-                //tinyAtmosphere.position.x += 1;
-                //tinyAtmosphere.rotation.z += Math.PI * 2 / 10000 * delta;
+                giantGroup.rotation.z += Math.PI * 2 / 20000 * delta;
 
                 const tinyWorldPosition = new Three.Vector3();
                 tinyAtmosphere.getWorldPosition(tinyWorldPosition);
-                /*const pointLightWorldPosition = tinyWorldPosition.clone();
-                pointLightWorldPosition.z -= 500;
-                pointLightWorldPosition.x -= 250;*/
-
-                //const lightVector = new Three.Vector3().subVectors(pointLightWorldPosition, tinyWorldPosition);
+                const giantWorldPosition = new Three.Vector3();
+                giantAtmosphere.getWorldPosition(giantWorldPosition);
 
                 tinyAtmosphereMaterial.uniforms.vPlanetWorldPosition.value = tinyWorldPosition;
-                /*tinyAtmosphereMaterial.uniforms.stars.value = [...stars, {
-                    ...stars[0],
-                    position: pointLightWorldPosition,
-                }]*/
-                //tinyAtmosphereMaterial.uniforms.vStarWorldPosition.value = pointLightWorldPosition;
-                //tinyAtmosphereMaterialV2.needsUpdate = true;
-                //tinyAtmosphereMaterialV2.uniformsNeedUpdate = true;
-                //tinyAtmosphereMaterial.lightDirection = lightVector.divideScalar(lightVector.length());
-                //tinyAtmosphereMaterial.cameraDistance = new Three.Vector3().subVectors(cameraWorldPosition, tinyWorldPosition).length() + 40;;
+                giantAtmosphereMaterial.uniforms.vPlanetWorldPosition.value = giantWorldPosition;
 
                 mainView.render();
             }

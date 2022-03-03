@@ -45,6 +45,7 @@ uniform float kM;
 uniform float eStar;
 uniform float g;
 uniform float gg;
+uniform Star stars[NUM_STARS];
 
 vec2 solveQuadratic(float b, float c)
 {
@@ -153,13 +154,12 @@ vec3 inScatter(vec3 o, vec3 dir, vec2 e, vec3 l) {
         v += step;
     }
     
-    return sum * ( kR * cR * rayleighPhase( cc ) + kM * miePhase( g, gg, c, cc ) ) * eStar * vStarColor;
+    return sum * ( kR * cR * rayleighPhase( cc ) + kM * miePhase( g, gg, c, cc ) );
 }
 
 vec3 calcColor() {
     // Normalize to planet centered at 0,0,0 for ease of subsequent math
     vec3 vWorldPosition = vec3(modelMatrix * vec4(position, 1.0));
-    vec3 starRay = normalize(vStarWorldPosition - vPlanetWorldPosition);
     vec3 vEye = cameraPosition - vPlanetWorldPosition;
     vec3 vEyeRay = normalize(vWorldPosition - cameraPosition);
 
@@ -169,7 +169,18 @@ vec3 calcColor() {
         atmosphereIntersections.y = planetIntersections.x;
     }
 
-    vec3 I = inScatter(vEye, vEyeRay, atmosphereIntersections, starRay);
+    vec3 I = vec3(0.0);
+    #if NUM_STARS > 0
+    #pragma unroll_loop_start
+    for ( int i = 0; i < NUM_STARS; i ++ ) {
+        Star star = stars[i];
+        vec3 starRay = normalize(star.position - vPlanetWorldPosition);
+        vec3 scatter = inScatter(vEye, vEyeRay, atmosphereIntersections, starRay);
+
+        I += clamp(scatter * star.e * star.color, 0.0, 1.0);
+    }
+    #pragma unroll_loop_end
+    #endif
 
     return vec3(I);
 }

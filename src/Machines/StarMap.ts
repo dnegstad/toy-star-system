@@ -94,27 +94,27 @@ export const starMapMachine = createMachine<StarMapContext, StarMapEvent>({
             },
             starSizes: {
                 'supergiant': {
-                    radius: 16,
+                    radius: 40,
                     segments: 32,
                 },
                 'giant': {
-                    radius: 14,
+                    radius: 36,
                     segments: 32,
                 },
                 'large': {
-                    radius: 12,
+                    radius: 32,
                     segments: 32,
                 },
                 'medium': {
-                    radius: 10,
+                    radius: 28,
                     segments: 16,
                 },
                 'small': {
-                    radius: 8,
+                    radius: 24,
                     segments: 16,
                 },
                 'dwarf': {
-                    radius: 6,
+                    radius: 20,
                     segments: 16,
                 },
             },
@@ -158,32 +158,32 @@ export const starMapMachine = createMachine<StarMapContext, StarMapEvent>({
             },
             planetSizes: {
                 'tiny': {
-                    radius: 10,
-                    segments: 16,
+                    radius: 15,
+                    segments: 64,
                 },
                 'small': {
-                    radius: 12,
-                    segments: 16,
+                    radius: 18,
+                    segments: 64,
                 },
                 'medium': {
-                    radius: 14,
-                    segments: 16,
+                    radius: 21,
+                    segments: 64,
                 },
                 'large': {
-                    radius: 16,
-                    segments: 16,
+                    radius: 24,
+                    segments: 64,
                 },
                 'huge': {
-                    radius: 18,
-                    segments: 16,
+                    radius: 27,
+                    segments: 128,
                 },
                 'gasgiant': {
                     radius: 30,
-                    segments: 32,
+                    segments: 128,
                 },
                 'asteroids': {
                     radius: 2,
-                    segments: 16,
+                    segments: 64,
                 },
             },
         },
