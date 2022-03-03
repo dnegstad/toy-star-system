@@ -1,17 +1,17 @@
 import * as Three from 'three/src/Three';
 
-export type SunMaterialProperties = {
+export type StarMaterialProperties = {
     octaves?: number;
     highTemp: number;
     lowTemp: number;
 }
 
-export class SunMaterial extends Three.ShaderMaterial {
+export class StarMaterial extends Three.ShaderMaterial {
     constructor({
         octaves = 8,
         highTemp,
         lowTemp,
-    }: SunMaterialProperties) {
+    }: StarMaterialProperties) {
         super({
             uniforms: {
                 octaves: {
@@ -153,7 +153,11 @@ export class SunMaterial extends Three.ShaderMaterial {
                 uniform float lowTemp;
                 varying float temp;
                 void main() {
-                    gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+                    #ifdef USE_INSTANCING
+                        gl_Position = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4( position, 1.0 );
+                    #else
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+                    #endif
                     float noiseBase = (noise(position, octaves, 0.4, 0.7) + 1.0) / 2.0;
                     // Sunspots
                     float frequency = 0.04;

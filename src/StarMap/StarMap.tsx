@@ -1,17 +1,22 @@
-import { OrthographicCamera, Stars } from '@react-three/drei';
+import { OrthographicCamera } from '@react-three/drei';
 import { Canvas,  ThreeEvent, useLoader, useThree } from '@react-three/fiber';
 import { useGesture } from '@use-gesture/react';
 import { useActor, useSelector } from '@xstate/react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import React, { Suspense, useCallback, useLayoutEffect, useMemo, useRef } from 'react';
+import React, { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Pass } from 'three/examples/jsm/postprocessing/Pass';
+import { TexturePass } from 'three/examples/jsm/postprocessing/TexturePass';
 import * as Three from 'three/src/Three';
 import { ActorRefFrom } from 'xstate';
-import { db, PlanetRecord, PlanetType, StarSystemRecord } from '../Data/Database';
-import { StarMapMachine } from '../Machines/StarMap';
+import { db, PlanetRecord, PlanetSize, PlanetType, StarSize, StarSystemRecord, StarType } from '../Data/Database';
+import { StarTypeData, StarMapMachine, isTextureStarTypeData, PlanetTypeData } from '../Machines/StarMap';
+import { StarMaterial } from '../Materials/StarMaterial';
 import { Scene } from '../Scene/Scene';
-import { System, SystemDetail } from '../System/System';
-import { normalize } from '../utils/normalize';
+import { InstancedStars, System, SystemDetail } from '../System/System';
 import './StarMap.css';
+import { EffectView } from './View';
+import { ScaledTextureMaterial } from '../Materials/ScaledTextureMaterial';
+import { AtmosphereMaterial, AtmosphereStar } from '../Materials/AtmosphereMaterial';
 
 type StarMapProps = {
     machine: ActorRefFrom<StarMapMachine>;
@@ -80,7 +85,12 @@ const SelectedSystemCamera: React.FC<{system: StarSystemRecord, machine: ActorRe
     )
 }
 
-export const PlanetMaterialContext = React.createContext<Record<PlanetType, Three.Material>>({} as Record<PlanetType, Three.Material>);
+export type MaterialsContextState = {
+    stars: Record<'yellow', Three.Material>;
+    planets: Record<PlanetType, Three.Material>;
+}
+
+export const MaterialsContext = React.createContext<MaterialsContextState>({} as MaterialsContextState);
 
 const GameScene: React.FC<StarMapProps & { canvasRef: HTMLCanvasElement }> = ({machine, canvasRef}) => {
     const [state, send] = useActor(machine);
@@ -89,6 +99,17 @@ const GameScene: React.FC<StarMapProps & { canvasRef: HTMLCanvasElement }> = ({m
     const systemsGroupRef = useRef({} as Three.Group);
     const sceneRef = useRef({} as Three.Scene);
 
+    const starTextures = useLoader(Three.TextureLoader, ['2k_sun.jpg']);
+    const starMaterials: Record<'yellow', Three.Material> = useMemo(() => {
+        return {
+            yellow: new Three.MeshPhongMaterial({
+                map: starTextures[0],
+                emissive: '#ffdf2a',
+                emissiveIntensity: 0.75,
+                shininess: 0,
+            }),
+        };
+    }, []);
     const planetTextures = useLoader(Three.TextureLoader, ['Barren01.png', 'Barren-bump01.png', 'Desert01.png', 'Swamp01.png', 'Ocean02.png', 'Terran01.png', 'Tundra01.png', 'Inferno01.png', 'Toxic01.png', 'GasGiant01.png']);
     const planetMaterials: Record<PlanetType, Three.Material> = useMemo(() => {
         return {
@@ -138,9 +159,11 @@ const GameScene: React.FC<StarMapProps & { canvasRef: HTMLCanvasElement }> = ({m
     const selectedStarSystem = useLiveQuery(() => state.context.selectedSystem ? db.starSystems.where('uuid').equals(state.context.selectedSystem).first() : undefined, [state.context.selectedSystem]);
 
     useLayoutEffect(() => {
+        starTextures.forEach((texture) => gl.initTexture(texture));
         planetTextures.forEach((texture) => gl.initTexture(texture));
 
         return () => {
+            starTextures.forEach((texture) => texture.dispose());
             planetTextures.forEach((texture) => texture.dispose());
         }
     }, []);
@@ -218,6 +241,18 @@ const GameScene: React.FC<StarMapProps & { canvasRef: HTMLCanvasElement }> = ({m
         pinch: { preventDefault: true, pointer: { touch: true } },
     });
 
+    const groupedStarSystems = useMemo(() => {
+        return starSystems.reduce((systemGroups, system) => ({
+            ...systemGroups,
+            [system.type]: [...(systemGroups[system.type] || []), system]}), {} as Record<StarType, Array<StarSystemRecord>>);
+    }, [starSystems]);
+
+    const instancedSystems = useMemo(() => {
+        return Object.entries(groupedStarSystems).map(([starType, systems]) => {
+            return <InstancedStars key={starType} starType={starType as StarType} stars={systems} />;
+        });
+    }, [groupedStarSystems]);
+
     const systems = starSystems.map((system) => {
         const id = system.uuid as string;
 
@@ -226,12 +261,12 @@ const GameScene: React.FC<StarMapProps & { canvasRef: HTMLCanvasElement }> = ({m
             send({type: 'SYSTEM.SELECT', value: id});
         }
 
-        return true ? <System key={id} starSystem={system} selected={state.context.selectedSystem === id} onClick={selectSystem} /> : null;
+        return <System key={id} starSystem={system} selected={state.context.selectedSystem === id} onClick={selectSystem} />;
     });
 
     return (
         <>
-            <PlanetMaterialContext.Provider value={planetMaterials}>
+            <MaterialsContext.Provider value={{stars: starMaterials, planets: planetMaterials}}>
                 <Scene camera={camera}>
                     <mesh onClick={(_) => send({type: 'SYSTEM.DESELECT'})} visible={false}>
                         <sphereGeometry args={[4000, 8, 8]} />
@@ -240,11 +275,410 @@ const GameScene: React.FC<StarMapProps & { canvasRef: HTMLCanvasElement }> = ({m
                     <group ref={systemsGroupRef}>
                         <ambientLight intensity={1} />
                         {systems}
+                        {instancedSystems}
                     </group>
                 </Scene>
                 {selectedStarSystem ? <SelectedSystemCamera system={selectedStarSystem} machine={machine} /> : null}
-            </PlanetMaterialContext.Provider>
+            </MaterialsContext.Provider>
         </>
+    );
+}
+
+type RendererProps = {
+    canvas: HTMLCanvasElement,
+    machine: ActorRefFrom<StarMapMachine>,
+}
+
+type GeometryCacheState = {
+    stars: Record<StarSize, Three.BufferGeometry>;
+    planets: Record<PlanetSize, Three.BufferGeometry>;
+}
+
+type MaterialCacheState = {
+    stars: Record<StarType, Three.Material>;
+    planets: Record<PlanetType, Three.Material>;
+    background: Three.Texture;
+}
+
+export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
+    const [state, send] = useActor(machine);
+    const [geometry, setGeometry] = useState(null! as GeometryCacheState);
+    const [materials, setMaterials] = useState(null! as MaterialCacheState);
+    const animationFrameHandleRef = useRef(0);
+    const previousTimestampRef = useRef(0);
+
+    const renderer = useMemo(() => {
+        const renderer = new Three.WebGLRenderer({
+            alpha: true,
+            antialias: true,
+            powerPreference: 'high-performance',
+            canvas,
+            logarithmicDepthBuffer: false,
+        });
+        renderer.toneMapping = Three.ACESFilmicToneMapping;
+        renderer.setPixelRatio(window.devicePixelRatio);
+
+        renderer.autoClear = false;
+        renderer.outputEncoding = Three.sRGBEncoding;
+
+        return renderer;
+    }, [canvas]);
+
+    useEffect(() => {
+        const stars = Object.entries(state.context.materialData.starSizes).reduce((starGeometries, [starSize, props]) => {
+            const geometry = new Three.SphereBufferGeometry(props.radius, props.segments, props.segments).rotateX(Math.PI / 2);
+            geometry.name = `${starSize}StarSphereGeometry`;
+            return {
+                ...starGeometries,
+                [starSize as StarSize]: geometry,
+            };
+        }, {} as Record<StarSize, Three.BufferGeometry>);
+
+        const planets = Object.entries(state.context.materialData.planetSizes).reduce((planetGeometries, [planetSize, props]) => {
+            const geometry = new Three.SphereBufferGeometry(props.radius, props.segments, props.segments).rotateX(Math.PI / 2);
+            geometry.name = `${planetSize}PlanetSphereGeometry`;
+            return {
+                ...planetGeometries,
+                [planetSize as PlanetSize]: geometry,
+            };
+        }, {} as Record<PlanetSize, Three.BufferGeometry>);
+
+        setGeometry({
+            stars,
+            planets,
+        });
+
+        return () => {
+            Object.entries(stars).forEach(([,star]) => star.dispose());
+            Object.entries(planets).forEach(([,planet]) => planet.dispose());
+        }
+    }, [renderer]);
+
+    useEffect(() => {
+        const textureLoader = new Three.TextureLoader();
+        const loadMaterials = async () => {
+            const [
+                starTextures,
+                planetTextures,
+                backgroundTexture,
+            ] = await Promise.all([
+                // Star textures
+                Promise.all(
+                    Object.entries(state.context.materialData.starColors)
+                    .reduce((starColors, [starColor, props]) => {
+                        return [
+                            ...starColors,
+                            isTextureStarTypeData(props)
+                            ? textureLoader.loadAsync(props.texture).then((texture) => {
+                                return {texture, starColor: starColor as StarType, props};
+                            })
+                            : Promise.resolve({starColor: starColor as StarType, props}),
+                        ];
+                    }, new Array<Promise<{texture?: Three.Texture, starColor: StarType, props: StarTypeData}>>()),
+                ),
+                // Planet textures
+                Promise.all(
+                    Object.entries(state.context.materialData.planetTypes)
+                    .reduce((planetTypes, [planetType, props]) => {
+                        return [
+                            ...planetTypes,
+                            textureLoader.loadAsync(props.texture).then((texture) => {
+                                return {texture, planetType: planetType as PlanetType, props};
+                            }),
+                        ];
+                    }, new Array<Promise<{texture: Three.Texture, planetType: PlanetType, props: PlanetTypeData}>>()),
+                ),
+                // Background texture
+                textureLoader.loadAsync(state.context.materialData.background.texture),
+            ]);
+
+            const stars = starTextures.reduce((stars, {starColor, props, texture}) => {
+                if (isTextureStarTypeData(props)) {
+                    renderer.initTexture(texture as Three.Texture);
+                    return {
+                        ...stars,
+                        [starColor]: new Three.MeshPhongMaterial({
+                            map: texture,
+                            emissive: props.color,
+                            emissiveIntensity: props.emissiveIntensity,
+                        }),
+                    };
+                } else {
+                    return {
+                        ...stars,
+                        [starColor]: new StarMaterial({
+                            octaves: 4,
+                            highTemp: props.highTemp,
+                            lowTemp: props.lowTemp,
+                        }),
+                    };
+                }
+            }, {} as Record<StarType, Three.Material>);
+
+            const planets = planetTextures.reduce((planets, {planetType, props, texture}) => {
+                renderer.initTexture(texture);
+                return {
+                    ...planets,
+                    [planetType]: new Three.MeshPhongMaterial({
+                        map: texture,
+                        shininess: props.shininess,
+                    }),
+                };
+            }, {} as Record<PlanetType, Three.Material>);
+
+            setMaterials({
+                stars,
+                planets,
+                background: backgroundTexture,
+            });
+
+            return {stars, planets, background: backgroundTexture};
+        }
+
+        const materialsPromise = loadMaterials();
+
+        return () => {
+            materialsPromise.then(({stars, planets, background}) => {
+                Object.entries(stars).forEach(([,star]) => {
+                    if (star instanceof Three.MeshPhongMaterial) {
+                        star.map?.dispose();
+                    }
+
+                    star.dispose();
+                })
+                Object.entries(planets).forEach(([,planet]) => {
+                    if (planet instanceof Three.MeshPhongMaterial) {
+                        planet.map?.dispose();
+                    }
+
+                    planet.dispose();
+                });
+                background.dispose();
+            });
+        }
+    }, [renderer]);
+
+    useEffect(() => {
+        if (!geometry || !materials) {
+            return;
+        }
+
+        const backgroundAspectRatio = 2048 / 1024;
+
+        const { width: initialWidth, height: initialHeight } = canvas.getBoundingClientRect();
+
+        const aspectRatio = initialWidth / initialHeight;
+
+        const oCamera = new Three.OrthographicCamera(-initialWidth / 2, initialHeight / 2, initialWidth / 2, -initialHeight / 2, 0.1, 10000);
+        oCamera.position.set(0, -Math.tan(Math.PI / 3) * 500, 500);
+        oCamera.lookAt(0, 0, 0);
+        oCamera.updateProjectionMatrix();
+
+        const pCamera = new Three.PerspectiveCamera(50, aspectRatio, 0.1, 10000);
+        pCamera.position.set(0, 500, 0);
+        pCamera.lookAt(0, 0, 0);
+        pCamera.updateProjectionMatrix();
+
+        const mainCamera = oCamera;
+
+        const scene = new Three.Scene();
+
+        const ambientLight = new Three.AmbientLight();
+        ambientLight.intensity = 0.25;
+
+        const blue = new Three.Mesh(geometry.stars.supergiant, materials.stars.blue);
+        blue.position.set(0, 0, 0);
+
+        const yellow = new Three.Mesh(geometry.stars.medium, materials.stars.yellow);
+        yellow.position.set(-100, 0, 0);
+
+        const giant = new Three.Mesh(geometry.planets.gasgiant, materials.planets.tundra);
+        giant.position.set(100, 100, 0);
+        giant.addEventListener('click', (e) => {
+            giant.position.y -= 100;
+        });
+
+        const tinyGroup = new Three.Group();
+
+        const tinyPlanetGroup = new Three.Group();
+        tinyPlanetGroup.position.set(0, -100, 0);
+
+        const tiny = new Three.Mesh(geometry.planets.gasgiant, materials.planets.ocean);
+        tiny.visible = true;
+        tinyPlanetGroup.add(tiny);
+
+        const tinyCloudMaterial = new Three.MeshLambertMaterial({
+            transparent: true,
+            side: Three.DoubleSide,
+        });
+        const tinyClouds = new Three.Mesh(geometry.planets.gasgiant, tinyCloudMaterial);
+        tinyClouds.scale.setScalar(1.01);
+        tinyClouds.visible = false;
+        tinyPlanetGroup.add(tinyClouds);
+
+        new Three.TextureLoader().load('Clouds-EQUIRECTANGULAR-1-2048x1024.png', (cloudTexture) => {
+            tinyCloudMaterial.map = cloudTexture;
+            tinyCloudMaterial.alphaMap = cloudTexture;
+            tinyClouds.visible = true;
+        });
+
+        const pointLight = new Three.PointLight(new Three.Color('#537bff'));
+        pointLight.intensity = 1;
+        pointLight.position.set(0, 0, 0);
+        scene.add(pointLight);
+
+        tinyGroup.add(tinyPlanetGroup);
+        scene.add(tinyGroup);
+
+        const cameraWorldPosition = new Three.Vector3();
+        //const pointLightWorldPosition = new Three.Vector3(250, 0, -500);
+        const tinyWorldPosition = new Three.Vector3();
+        const pointLightWorldPosition = new Three.Vector3(0, 0, 500);
+        mainCamera.getWorldPosition(cameraWorldPosition);
+        //pointLight.getWorldPosition(pointLightWorldPosition);
+        tinyPlanetGroup.getWorldPosition(tinyWorldPosition);
+
+        const tinyAtmosphereGeometry = new Three.SphereBufferGeometry(32, 128, 128);
+
+        const stars = new Array<AtmosphereStar>({
+            position: new Three.Vector3(0, 0, 500),
+            color: pointLight.color,
+            e: 14.5,
+        }, {
+            position: new Three.Vector3(500, 0, 0),
+            color: new Three.Color('#ff4112'),
+            e: 9,
+        });
+
+        const tinyAtmosphereMaterial = new AtmosphereMaterial({
+            outerRadius: 32,
+            innerRadius: 30,
+            planetWorldPosition: tinyWorldPosition,
+            wavelength: new Three.Vector3(0.3, 0.7, 1.0),
+            kr: 0.0166,//0.166,
+            km: 0.0025,//0.0025,
+            gravity: -0.75,
+            stars,
+        });
+
+        const tinyAtmosphere = new Three.Mesh(tiny.geometry, tinyAtmosphereMaterial);
+        tinyPlanetGroup.add(tinyAtmosphere);
+
+        scene.add(/*yellow, giant,*/blue, ambientLight);
+
+        const backgroundScale = aspectRatio > backgroundAspectRatio
+            ? new Three.Vector2(1, backgroundAspectRatio / aspectRatio)
+            : new Three.Vector2(aspectRatio / backgroundAspectRatio, 1);
+        const backgroundPass = new TexturePass(materials.background);
+        backgroundPass.clear = true;
+        backgroundPass.needsSwap = false;
+        backgroundPass.material = new ScaledTextureMaterial({scale: backgroundScale});
+        backgroundPass.uniforms = backgroundPass.material.uniforms;
+
+        const mainView = new EffectView({
+            renderer,
+            scene,
+            camera: mainCamera,
+            backgroundEffects: new Array<Pass>(backgroundPass),
+            clearColor: new Three.Color('red'),
+        });
+
+        const resizeObserver = new ResizeObserver((entries) => {
+            const { width: newWidth, height: newHeight } = entries[0].contentRect;
+            const aspectRatio = newWidth / newHeight;
+
+            renderer.setSize(newWidth, newHeight, false);
+
+            oCamera.left = -newWidth / 2;
+            oCamera.top = newHeight / 2;
+            oCamera.right = newWidth / 2;
+            oCamera.bottom = -newHeight / 2;
+            oCamera.updateProjectionMatrix();
+
+            pCamera.aspect = aspectRatio;
+            pCamera.updateProjectionMatrix();
+
+            (backgroundPass.material.uniforms.vScale.value as Three.Vector2) = aspectRatio > backgroundAspectRatio
+                ? new Three.Vector2(1, backgroundAspectRatio / aspectRatio)
+                : new Three.Vector2(aspectRatio / backgroundAspectRatio, 1);
+
+            mainView.onResize(new Three.Vector2(newWidth, newHeight));
+        });
+
+        resizeObserver.observe(canvas);
+
+        const onClick = (e: MouseEvent) => {
+            const raycaster = new Three.Raycaster();
+            raycaster.setFromCamera({x: (e.clientX / window.innerWidth) * 2 - 1, y: -(e.clientY / window.innerHeight) * 2 + 1}, mainCamera);
+            const intersection = raycaster.intersectObjects(scene.children)
+            if (intersection.length) {
+                intersection[0].object.position.y += 100;
+            }
+        }
+
+        canvas.addEventListener('click', onClick);
+
+        const f: FrameRequestCallback = (timestamp) => {
+            if (previousTimestampRef.current) {
+                const delta = timestamp - previousTimestampRef.current;
+
+                giant.rotation.z += Math.PI * 2 / 10000 * delta;
+                tiny.rotation.z += Math.PI * 2 / 10000 * delta;
+                tinyClouds.rotation.z += Math.PI * 2 / 5000 * delta;
+                //tinyGroup.position.x += 1;
+                //tinyAtmosphere.updateMatrix();
+                tinyGroup.rotation.z += Math.PI * 2 / 10000 * delta;
+                //tinyAtmosphere.position.x += 1;
+                //tinyAtmosphere.rotation.z += Math.PI * 2 / 10000 * delta;
+
+                const tinyWorldPosition = new Three.Vector3();
+                tinyAtmosphere.getWorldPosition(tinyWorldPosition);
+                /*const pointLightWorldPosition = tinyWorldPosition.clone();
+                pointLightWorldPosition.z -= 500;
+                pointLightWorldPosition.x -= 250;*/
+
+                //const lightVector = new Three.Vector3().subVectors(pointLightWorldPosition, tinyWorldPosition);
+
+                tinyAtmosphereMaterial.uniforms.vPlanetWorldPosition.value = tinyWorldPosition;
+                /*tinyAtmosphereMaterial.uniforms.stars.value = [...stars, {
+                    ...stars[0],
+                    position: pointLightWorldPosition,
+                }]*/
+                //tinyAtmosphereMaterial.uniforms.vStarWorldPosition.value = pointLightWorldPosition;
+                //tinyAtmosphereMaterialV2.needsUpdate = true;
+                //tinyAtmosphereMaterialV2.uniformsNeedUpdate = true;
+                //tinyAtmosphereMaterial.lightDirection = lightVector.divideScalar(lightVector.length());
+                //tinyAtmosphereMaterial.cameraDistance = new Three.Vector3().subVectors(cameraWorldPosition, tinyWorldPosition).length() + 40;;
+
+                mainView.render();
+            }
+
+            previousTimestampRef.current = timestamp;
+            animationFrameHandleRef.current = requestAnimationFrame(f);
+        }
+
+        animationFrameHandleRef.current = requestAnimationFrame(f);
+
+        return () => {
+            resizeObserver.disconnect();
+            canvas.removeEventListener('click', onClick);
+            cancelAnimationFrame(animationFrameHandleRef.current);
+            renderer.dispose();
+        }
+    }, [geometry, materials]);
+
+    return null;
+}
+
+export const StarMapCanvas: React.FC<StarMapProps> = ({machine}) => {
+    const canvasRef = useRef(null! as HTMLCanvasElement);
+
+    return (
+        <canvas className="StarMap" ref={canvasRef}>
+            {canvasRef.current
+            ? <Renderer canvas={canvasRef.current} machine={machine} />
+            : null}
+        </canvas>
     );
 }
 

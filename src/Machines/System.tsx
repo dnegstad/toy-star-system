@@ -1,10 +1,14 @@
 import { createMachine } from 'xstate';
-import { StarType } from './Game';
+import { string } from 'zod';
+import { PlanetRecord, StarType } from '../Data/Database';
 
 export type SystemContext = {
     id: string;
     name: string;
-    starType: StarType;
+    type: StarType;
+    planets: Array<PlanetRecord>;
+    x: number;
+    y: number;
 };
 
 export type SystemEvent =
@@ -12,5 +16,10 @@ export type SystemEvent =
 | { type: 'PLANET.DESELECT' };
 
 export const systemMachine = createMachine<SystemContext, SystemEvent>({
+    id: 'system',
+    context: {} as SystemContext,
+    initial: 'default',
+    states: {
 
+    }
 });

@@ -25,12 +25,23 @@ export class GlowMaterial extends Three.ShaderMaterial {
             vertexShader: `
                 precision highp float;
                 uniform vec3 viewVector;
+                #ifdef USE_INSTANCING
+                    attribute vec3 instanceViewVector;
+                #endif
                 uniform float scale;
                 varying float intensity;
                 void main() {
-                    gl_Position = projectionMatrix * modelViewMatrix * vec4( position * scale, 1.0 );
+                    #ifdef USE_INSTANCING
+                        gl_Position = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4( position, 1.0 );
+                    #else
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+                    #endif
                     vec3 actual_normal = vec3(modelMatrix * vec4(normal, 0.0));
-                    intensity = pow( dot(normalize(viewVector), actual_normal), 6.0 );
+                    #ifdef USE_INSTANCING
+                        intensity = pow( dot(normalize(instanceViewVector), actual_normal), 6.0 );
+                    #else
+                        intensity = pow( dot(normalize(viewVector), actual_normal), 6.0 );
+                    #endif
                 }
             `,
             fragmentShader: `

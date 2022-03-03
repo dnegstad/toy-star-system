@@ -3,61 +3,9 @@ import React, { useContext } from 'react';
 import { ActorRefFrom, assign, createMachine, InterpreterFrom, spawn } from 'xstate';
 import { string, z } from 'zod';
 import { db } from '../Data/Database';
-import { StarMap } from '../StarMap/StarMap';
+import { StarMap, StarMapCanvas } from '../StarMap/StarMap';
 
 import { starMapMachine, StarMapMachine } from './StarMap';
-
-type Expand<T> = T extends infer O ? { [K in keyof O]: O[K] } : never;
-
-const HasIdentity = z.object({
-    id: z.string().uuid(),
-    kind: z.string(),
-});
-type HasIdentity = z.infer<typeof HasIdentity>;
-
-const HasPosition = z.object({
-    x: z.number(),
-    y: z.number(),
-});
-type HasPosition = z.infer<typeof HasPosition>;
-
-export const StarType = z.union([
-    z.literal('blue'),
-    z.literal('white'),
-    z.literal('yellow'),
-    z.literal('orange'),
-    z.literal('red'),
-]);
-export type StarType = Expand<z.infer<typeof StarType>>;
-
-export const StarSystemRecord = z.object({
-    kind: z.literal('system'),
-    name: z.string(),
-    starType: StarType,
-    planets: z.array(z.string()),
-}).and(HasIdentity).and(HasPosition);
-export type StarSystemRecord = Expand<z.infer<typeof StarSystemRecord>>;
-
-export const PlanetType = z.union([
-    z.literal('barren'),
-    z.literal('volcanic'),
-    z.literal('desert'),
-    z.literal('terran'),
-    z.literal('abundant'),
-    z.literal('ocean'),
-    z.literal('tundra'),
-    z.literal('gasgiant'),
-    z.literal('asteroids'),
-]);
-export type PlanetType = Expand<z.infer<typeof PlanetType>>;
-
-export const PlanetRecord = z.object({
-    kind: z.literal('planet'),
-    planetType: PlanetType,
-    system: z.string(),
-    orbit: z.number().gte(0),
-}).and(HasIdentity);
-export type PlanetRecord = Expand<z.infer<typeof PlanetRecord>>;
 
 export type GameContext = {
     starMap: {
@@ -78,37 +26,44 @@ const initializeGameState = async () => {
     await Promise.all([db.starSystems.clear(), db.planets.clear()]);
     const starSystems = await db.starSystems.bulkAdd([{
         name: 'Blue man group',
-        starType: 'blue',
+        type: 'blue',
+        size: 'supergiant',
         x: 0,
         y: 0,
     }, {
         name: 'White christmas',
-        starType: 'white',
+        type: 'white',
+        size: 'giant',
         x: 150,
         y: 150,
     }, {
         name: 'Mellow yellow',
-        starType: 'yellow',
+        type: 'yellow',
+        size: 'large',
         x: -200,
         y: -200,
     }, {
         name: 'Tang',
-        starType: 'orange',
+        type: 'orange',
+        size: 'medium',
         x: 400,
         y: 0,
     }, {
         name: 'Red dwarf',
-        starType: 'red',
+        type: 'red',
+        size: 'small',
         x: 0,
         y: 400,
     }, {
         name: 'Red menace',
-        starType: 'red',
+        type: 'red',
+        size: 'dwarf',
         x: 0,
         y: -400,
     }, {
         name: 'The sun?',
-        starType: 'yellow',
+        type: 'yellow',
+        size: 'medium',
         x: -300,
         y: 100,
     }], { allKeys: true });
@@ -198,12 +153,7 @@ export const gameMachine = createMachine<GameContext, GameEvent>({
                                     starMap: ({starMap, systems, planets}) => {
                                         return {
                                             ...starMap,
-                                            ref: spawn(starMapMachine.withContext({
-                                                width: starMap.width,
-                                                height: starMap.height,
-                                                systemDetailWindowWidth: 600,
-                                                systemDetailWindowHeight: 600,
-                                            }), 'starMap'),
+                                            ref: spawn(starMapMachine, 'starMap'),
                                         };
                                     },
                                 }),
@@ -266,7 +216,7 @@ export const Game: React.FC<GameProps> = ({width, height}) => {
     return (
         <>
             {isStarMap && (
-                <StarMap machine={starMapRef} />
+                <StarMapCanvas machine={starMapRef} />
             )}
         </>
     );

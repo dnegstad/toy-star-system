@@ -3,7 +3,7 @@ import { Color, useFrame } from '@react-three/fiber';
 import React, { useContext, useMemo, useRef } from 'react';
 import * as Three from 'three/src/Three';
 import { PlanetRecord, PlanetSize } from '../Data/Database';
-import { PlanetMaterialContext } from '../StarMap/StarMap';
+import { MaterialsContext } from '../StarMap/StarMap';
 import './Planet.css';
 
 export enum Owner {
@@ -102,7 +102,7 @@ export const Planet: React.FC<PlanetProps> = ({planet}) => {
         }
     }, [planet.size]);
 
-    const planetMaterials = useContext(PlanetMaterialContext)
+    const {planets: planetMaterials} = useContext(MaterialsContext)
 
     /*const atmosphereGeometry = useMemo(() => {
         const innerRadius = getPlanetRadius(planet.size);

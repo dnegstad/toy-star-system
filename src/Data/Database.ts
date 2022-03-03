@@ -24,9 +24,20 @@ export const StarType = z.union([
 ]);
 export type StarType = Expand<z.infer<typeof StarType>>;
 
+export const StarSize = z.union([
+    z.literal('supergiant'),
+    z.literal('giant'),
+    z.literal('large'),
+    z.literal('medium'),
+    z.literal('small'),
+    z.literal('dwarf'),
+]);
+export type StarSize = Expand<z.infer<typeof StarSize>>;
+
 export const StarSystemRecord = z.object({
     name: z.string(),
-    starType: StarType,
+    type: StarType,
+    size: StarSize,
 }).and(HasIdentity).and(HasPosition);
 export type StarSystemRecord = Expand<z.infer<typeof StarSystemRecord>>;
 
@@ -69,9 +80,9 @@ export class GameDatabase extends Dexie {
     constructor() {
         super('gameDatabase');
 
-        this.version(1).stores({
-            starSystems: '$$uuid, name, starType, x, y',
-            planets: '$$uuid, planetType, starSystemId, orbit, [starSystemId+orbit]',
+        this.version(2).stores({
+            starSystems: '$$uuid, name, type, size, x, y',
+            planets: '$$uuid, type, size, starSystemId, orbit, [starSystemId+orbit]',
         });
     }
 }
