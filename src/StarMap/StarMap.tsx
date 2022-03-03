@@ -17,6 +17,7 @@ import './StarMap.css';
 import { EffectView } from './View';
 import { ScaledTextureMaterial } from '../Materials/ScaledTextureMaterial';
 import { AtmosphereMaterial, AtmosphereStar } from '../Materials/AtmosphereMaterial';
+import { GlowMaterial } from '../Materials/GlowMaterial';
 
 type StarMapProps = {
     machine: ActorRefFrom<StarMapMachine>;
@@ -141,7 +142,7 @@ const GameScene: React.FC<StarMapProps & { canvasRef: HTMLCanvasElement }> = ({m
             volcanic: new Three.MeshPhongMaterial({
                 map: planetTextures[7],
                 shininess: 0,
-                emissive: 'red',
+                emissive: new Three.Color('red'),
             }),
             toxic: new Three.MeshPhongMaterial({
                 map: planetTextures[8],
@@ -486,9 +487,6 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
         const ambientLight = new Three.AmbientLight();
         ambientLight.intensity = 0.5;
 
-        const blue = new Three.Mesh(geometry.stars.supergiant, materials.stars.blue);
-        blue.position.set(0, 0, 0);
-
         const yellow = new Three.Mesh(geometry.stars.medium, materials.stars.yellow);
         yellow.position.set(-100, 0, 0);
 
@@ -497,7 +495,7 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
         giantPlanetGroup.position.set(0, -200, 0);
         giantGroup.add(giantPlanetGroup);
 
-        const giant = new Three.Mesh(geometry.planets.huge, materials.planets.gasgiant);
+        const giant = new Three.Mesh(geometry.planets.huge, materials.planets.volcanic);
         giantPlanetGroup.add(giant);
 
         const tinyGroup = new Three.Group();
@@ -529,7 +527,23 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
         pointLight.intensity = 1;
         pointLight.position.set(0, 0, 0);
 
+        const blue = new Three.Mesh(geometry.stars.supergiant, materials.stars.blue);
+        blue.position.set(0, 0, 0);
+
         scene.add(pointLight, tinyGroup, giantGroup, blue, ambientLight);
+
+        const glowWorldPosition = new Three.Vector3();
+        const cameraWorldDirection = new Three.Vector3();
+        blue.getWorldPosition(glowWorldPosition);
+        mainCamera.getWorldDirection(cameraWorldDirection);
+
+        const blueGlowMaterial = new GlowMaterial({
+            color: new Three.Color('red'),
+            scale: 4,
+        });
+        blueGlowMaterial.viewVector = new Three.Vector3().subVectors(mainCamera.position, glowWorldPosition).projectOnVector(cameraWorldDirection);
+        const blueGlow = new Three.Mesh(blue.geometry, blueGlowMaterial);
+        scene.add(blueGlow);
 
         const giantWorldPosition = new Three.Vector3();
         const tinyWorldPosition = new Three.Vector3();
@@ -564,10 +578,10 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
             outerRadius: 29,
             innerRadius: 27,
             planetWorldPosition: giantWorldPosition,
-            wavelength: new Three.Vector3(0.3, 0.7, 1.0),
-            kr: 0.0166,
+            wavelength: new Three.Vector3(1.0, 0.3, 0.3),
+            kr: 0.0566,
             km: 0.0025,
-            gravity: -0.9,
+            gravity: -0.7,
             stars,
         });
 

@@ -128,7 +128,7 @@ export const starMapMachine = createMachine<StarMapContext, StarMapEvent>({
                     shininess: 0,
                 },
                 'volcanic': {
-                    texture: 'Inferno01.png',
+                    texture: 'Volcanic-EQUIRECTANGULAR-3-2048x1012.png',
                     shininess: 0,
                 },
                 'swamp': {
@@ -152,7 +152,7 @@ export const starMapMachine = createMachine<StarMapContext, StarMapEvent>({
                     shininess: 0,
                 },
                 'gasgiant': {
-                    texture: 'worldgen.gif',
+                    texture: 'Gas Giant-EQUIRECTANGULAR-3-2048x1012.png',
                     shininess: 0,
                 },
             },
