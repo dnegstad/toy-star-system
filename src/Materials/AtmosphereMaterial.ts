@@ -1,4 +1,4 @@
-import { Color, Vector3, MeshPhongMaterial, IUniform } from 'three';
+import { Color, Vector3, MeshPhongMaterial, IUniform, AdditiveBlending, CustomBlending, MinEquation, MaxEquation, AddEquation, SrcColorFactor, BackSide } from 'three';
 import CustomShaderMaterial from 'three-custom-shader-material/vanilla';
 
 export type AtmosphereStar = {
@@ -16,6 +16,7 @@ export type AtmosphereProps = {
     kr: number;
     stars: Array<AtmosphereStar>;
     gravity: number;
+    scale: number;
 }
 
 const vert = (numStars: number) => /* glsl */`
@@ -27,7 +28,6 @@ struct Star {
 
 #define NUM_STARS ${numStars}
 
-const float fInnerRadiusBuffer = 1.0;
 const float MAX = 10000.0;
 const int numOutScatter = 5;
 const float fNumOutScatter = 5.0;
@@ -42,6 +42,7 @@ uniform vec3 vStarColor;
 uniform vec3 cR;
 uniform float kR;
 uniform float kM;
+uniform float fScale;
 uniform float eStar;
 uniform float g;
 uniform float gg;
@@ -129,7 +130,7 @@ float outScatter(vec3 p, vec3 q, float scaleH, float scaleL) {
 // e = start and end point in atmosphere
 // l = unit vector to star
 vec3 inScatter(vec3 o, vec3 dir, vec2 e, vec3 l) {
-    float scaleH = 4.0 / (fOuterRadius - fInnerRadius);
+    float scaleH = fScale / (fOuterRadius - fInnerRadius);
     float scaleL = 1.0 / (fOuterRadius - fInnerRadius);
     // calculate the step length
     float len = (e.y - e.x) / fNumInScatter;
@@ -159,12 +160,18 @@ vec3 inScatter(vec3 o, vec3 dir, vec2 e, vec3 l) {
 
 vec3 calcColor() {
     // Normalize to planet centered at 0,0,0 for ease of subsequent math
-    vec3 vWorldPosition = vec3(modelMatrix * vec4(position, 1.0));
+    float fScale = fOuterRadius / fInnerRadius;
+    vec3 vWorldPosition = vec3(modelMatrix * fScale * vec4(position, 1.0));
     vec3 vEye = cameraPosition - vPlanetWorldPosition;
     vec3 vEyeRay = normalize(vWorldPosition - cameraPosition);
 
+    if (isOrthographic) {
+        vEyeRay = normalize( vec3( - viewMatrix[ 0 ][ 2 ], - viewMatrix[ 1 ][ 2 ], - viewMatrix[ 2 ][ 2 ] ) );
+        vEye = (vWorldPosition - vPlanetWorldPosition)  - (vEyeRay * fOuterRadius);
+    }
+
     vec2 atmosphereIntersections = checkSphere(vEye, vEyeRay, fOuterRadius);
-    vec2 planetIntersections = checkSphere(vEye, vEyeRay, fInnerRadius / fInnerRadiusBuffer);
+    vec2 planetIntersections = checkSphere(vEye, vEyeRay, fInnerRadius);
     if (planetIntersections.y >= planetIntersections.x) {
         atmosphereIntersections.y = planetIntersections.x;
     }
@@ -192,7 +199,7 @@ void main() {
     float fScale = fOuterRadius / fInnerRadius;
     vec3 vWorldPosition = vec3(modelMatrix * fScale * vec4(position, 1.0));
     vec3 eyeRay = normalize(cameraPosition - vWorldPosition);
-    vec3 worldNormal = normalize(vec3(modelMatrix * vec4(normal, 0.0)));
+    vec3 worldNormal = normalize(vec3(modelMatrix * fScale * vec4(normal, 0.0)));
 
     atmoColor = calcColor();
     eyeNormalAngle = dot(eyeRay, worldNormal);
@@ -205,11 +212,12 @@ const frag = /* glsl */ `
 varying vec3 atmoColor;
 varying float eyeNormalAngle;
 
+float getAlpha() {
+    return clamp(-log(eyeNormalAngle) / log(2.0), 0.1, 1.0);
+}
+
 void main() {
-    //csm_FragColor = vec4(atmoColor, max(max(atmoColor.r, atmoColor.g), atmoColor.b));
-    csm_FragColor = vec4(atmoColor, clamp(-log(eyeNormalAngle) / log(10.0), 0.1, 1.0) * max(max(atmoColor.r, atmoColor.g), atmoColor.b));
-    //csm_FragColor = vec4(atmoColor, clamp(-log(eyeNormalAngle) / log(10.0), 0.0, 1.0));
-    //csm_FragColor = vec4(atmoColor, 0.9);
+    csm_FragColor = vec4(atmoColor, 1.0);
 }
 `;
 
@@ -239,6 +247,9 @@ export class AtmosphereMaterial extends CustomShaderMaterial {
                 kR: {
                     value: props.kr,
                 },
+                fScale: {
+                    value: props.scale,
+                },
                 stars: {
                     value: props.stars,
                     properties: {
@@ -255,8 +266,10 @@ export class AtmosphereMaterial extends CustomShaderMaterial {
                 },
             },
             {
+                //side: BackSide,
                 transparent: true,
                 shininess: 0,
+                blending: AdditiveBlending,
             }
         );
     }

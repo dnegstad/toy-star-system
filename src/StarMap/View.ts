@@ -1,6 +1,7 @@
-import { Camera, Color, Object3D, Scene, Vector2, Vector4, WebGLRenderer } from 'three';
+import { Camera, Color, ColorRepresentation, Object3D, Scene, Vector2, Vector4, WebGLRenderer } from 'three';
 import { EffectComposer, Pass } from 'three/examples/jsm/postprocessing/EffectComposer';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass';
+import { SSAARenderPass } from 'three/examples/jsm/postprocessing/SSAARenderPass';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass';
 import { CopyShader } from 'three/examples/jsm/shaders/CopyShader';
 
@@ -232,12 +233,14 @@ export class View {
 export type EffectViewProps = ViewProps & {
     backgroundEffects?: Array<Pass>;
     postProcessingEffects?: Array<Pass>;
+    antialias?: boolean;
 }
 
 export class EffectView extends View {
     constructor({
         backgroundEffects = new Array<Pass>(),
         postProcessingEffects = new Array<Pass>(),
+        antialias = false,
         ...rest
     }: EffectViewProps) {
         super({...rest});
@@ -249,14 +252,19 @@ export class EffectView extends View {
 
         this._backgroundEffects.forEach((pass) => this._effectComposer.addPass(pass));
 
-        this._renderPass = new RenderPass(this._scene, this._camera);
-        this._renderPass.clear = false;
+        this._renderPass = antialias ? new SSAARenderPass(this._scene, this._camera, 'black', 0.0) : new RenderPass(this._scene, this._camera);
+        this._renderPass.clear = !!rest.clearColor;
         this._effectComposer.addPass(this._renderPass);
 
         const copyPass = new ShaderPass( CopyShader );
         this._effectComposer.addPass( copyPass );
 
         this._postProcessingEffects.forEach((pass) => this._effectComposer.addPass(pass));
+    }
+
+    set camera(camera: Camera) {
+        this._camera = camera;
+        this._renderPass.camera = camera;
     }
 
     get backgroundEffects(): Array<Pass> {
@@ -284,5 +292,5 @@ export class EffectView extends View {
     protected _backgroundEffects: Array<Pass>;
     protected _postProcessingEffects: Array<Pass>;
     protected _effectComposer: EffectComposer;
-    protected _renderPass: RenderPass;
+    protected _renderPass: RenderPass | SSAARenderPass;
 }

@@ -94,28 +94,28 @@ export const starMapMachine = createMachine<StarMapContext, StarMapEvent>({
             },
             starSizes: {
                 'supergiant': {
-                    radius: 40,
-                    segments: 32,
+                    radius: 30,
+                    segments: 128,
                 },
                 'giant': {
-                    radius: 36,
-                    segments: 32,
+                    radius: 28,
+                    segments: 128,
                 },
                 'large': {
-                    radius: 32,
-                    segments: 32,
+                    radius: 26,
+                    segments: 128,
                 },
                 'medium': {
-                    radius: 28,
-                    segments: 16,
+                    radius: 24,
+                    segments: 128,
                 },
                 'small': {
-                    radius: 24,
-                    segments: 16,
+                    radius: 22,
+                    segments: 128,
                 },
                 'dwarf': {
                     radius: 20,
-                    segments: 16,
+                    segments: 128,
                 },
             },
             planetTypes: {
@@ -128,7 +128,7 @@ export const starMapMachine = createMachine<StarMapContext, StarMapEvent>({
                     shininess: 0,
                 },
                 'volcanic': {
-                    texture: 'Volcanic-EQUIRECTANGULAR-3-2048x1012.png',
+                    texture: 'Lavaplanet_BaseColor.png',
                     shininess: 0,
                 },
                 'swamp': {
@@ -144,7 +144,7 @@ export const starMapMachine = createMachine<StarMapContext, StarMapEvent>({
                     shininess: 20,
                 },
                 'terran': {
-                    texture: 'Terran01.png',
+                    texture: 'Paradise_BaseColor.png',
                     shininess: 0,
                 },
                 'toxic': {
@@ -167,7 +167,7 @@ export const starMapMachine = createMachine<StarMapContext, StarMapEvent>({
                 },
                 'medium': {
                     radius: 21,
-                    segments: 64,
+                    segments: 256,
                 },
                 'large': {
                     radius: 24,
@@ -175,11 +175,11 @@ export const starMapMachine = createMachine<StarMapContext, StarMapEvent>({
                 },
                 'huge': {
                     radius: 27,
-                    segments: 128,
+                    segments: 64,
                 },
                 'gasgiant': {
                     radius: 30,
-                    segments: 128,
+                    segments: 64,
                 },
                 'asteroids': {
                     radius: 2,

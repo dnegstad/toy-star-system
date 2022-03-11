@@ -250,14 +250,6 @@ const SunMesh: React.FC<SunMeshProps> = ({starType, camera}) => {
         }
     }, [starType]);
 
-    useLayoutEffect(() => {
-        const glowWorldPosition = new Three.Vector3();
-        const cameraWorldDirection = new Three.Vector3();
-        sunGlowRef.current.getWorldPosition(glowWorldPosition);
-        camera.getWorldDirection(cameraWorldDirection);
-        sunGlowMaterial.viewVector = new Three.Vector3().subVectors(camera.position, glowWorldPosition).projectOnVector(cameraWorldDirection);
-    }, []);
-
     return (
         <>
             <pointLight color={sunColor} intensity={1.5} />

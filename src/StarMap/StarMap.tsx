@@ -4,8 +4,12 @@ import { useGesture } from '@use-gesture/react';
 import { useActor, useSelector } from '@xstate/react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import React, { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass';
 import { Pass } from 'three/examples/jsm/postprocessing/Pass';
 import { TexturePass } from 'three/examples/jsm/postprocessing/TexturePass';
+import { FXAAShader } from 'three/examples/jsm/shaders/FXAAShader';
+import { SSAARenderPass } from 'three/examples/jsm/postprocessing/SSAARenderPass';
+import { TAARenderPass } from 'three/examples/jsm/postprocessing/TAARenderPass';
 import * as Three from 'three/src/Three';
 import { ActorRefFrom } from 'xstate';
 import { db, PlanetRecord, PlanetSize, PlanetType, StarSize, StarSystemRecord, StarType } from '../Data/Database';
@@ -15,9 +19,13 @@ import { Scene } from '../Scene/Scene';
 import { InstancedStars, System, SystemDetail } from '../System/System';
 import './StarMap.css';
 import { EffectView } from './View';
+import { TerrainFaceBufferGeometry } from '../Geometries/SphericalCube';
 import { ScaledTextureMaterial } from '../Materials/ScaledTextureMaterial';
 import { AtmosphereMaterial, AtmosphereStar } from '../Materials/AtmosphereMaterial';
 import { GlowMaterial } from '../Materials/GlowMaterial';
+import { AtmosphereMaterialV2 } from '../Materials/AtmosphereMaterialV2';
+import { cartesianToSpherical, pointGenerator, rotateAngle, sphericalToCartesian, ThreeVoronoi } from '../Geometries/ThreeVoronoi';
+import { number } from 'zod';
 
 type StarMapProps = {
     machine: ActorRefFrom<StarMapMachine>;
@@ -111,8 +119,17 @@ const GameScene: React.FC<StarMapProps & { canvasRef: HTMLCanvasElement }> = ({m
             }),
         };
     }, []);
+
     const planetTextures = useLoader(Three.TextureLoader, ['Barren01.png', 'Barren-bump01.png', 'Desert01.png', 'Swamp01.png', 'Ocean02.png', 'Terran01.png', 'Tundra01.png', 'Inferno01.png', 'Toxic01.png', 'GasGiant01.png']);
     const planetMaterials: Record<PlanetType, Three.Material> = useMemo(() => {
+        const volcanicNormal = new Three.TextureLoader().load('Lavaplanet_Normal.png');
+        const volcanicRoughness = new Three.TextureLoader().load('Lavaplanet_Roughness.png');
+        const volcanicAO = new Three.TextureLoader().load('Lavaplanet_AO.png');
+
+        const terranNormal = new Three.TextureLoader().load('Paradise_Normal.png');
+        const terranRoughness = new Three.TextureLoader().load('Paradise_Roughness.png');
+        const terranAO = new Three.TextureLoader().load('Paradise_AO.png');
+
         return {
             barren: new Three.MeshPhongMaterial({
                 map: planetTextures[0],
@@ -131,23 +148,25 @@ const GameScene: React.FC<StarMapProps & { canvasRef: HTMLCanvasElement }> = ({m
                 map: planetTextures[4],
                 shininess: 40,
             }),
-            terran: new Three.MeshPhongMaterial({
+            terran: new Three.MeshPhysicalMaterial({
                 map: planetTextures[5],
-                shininess: 0,
+                aoMap: terranAO,
+                normalMap: terranNormal,
+                roughnessMap: terranRoughness,
             }),
             tundra: new Three.MeshPhongMaterial({
                 map: planetTextures[6],
                 shininess: 20,
             }),
-            volcanic: new Three.MeshPhongMaterial({
+            volcanic: new Three.MeshPhysicalMaterial({
                 map: planetTextures[7],
-                shininess: 0,
-                emissive: new Three.Color('red'),
+                aoMap: volcanicAO,
+                normalMap: volcanicNormal,
+                roughnessMap: volcanicRoughness,
             }),
             toxic: new Three.MeshPhongMaterial({
                 map: planetTextures[8],
                 shininess: 0,
-                emissive: 'purple',
             }),
             gasgiant: new Three.MeshPhongMaterial({
                 map: planetTextures[9],
@@ -311,7 +330,7 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
     const renderer = useMemo(() => {
         const renderer = new Three.WebGLRenderer({
             alpha: true,
-            antialias: true,
+            antialias: false,
             powerPreference: 'high-performance',
             canvas,
             logarithmicDepthBuffer: false,
@@ -475,24 +494,24 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
         oCamera.lookAt(0, 0, 0);
         oCamera.updateProjectionMatrix();
 
-        const pCamera = new Three.PerspectiveCamera(50, aspectRatio, 0.1, 10000);
-        pCamera.position.set(0, 500, 0);
+        const pCamera = new Three.PerspectiveCamera(40, aspectRatio, 10, 5000);
+        pCamera.position.set(0, -Math.tan(Math.PI / 12) * 500, 500);
         pCamera.lookAt(0, 0, 0);
         pCamera.updateProjectionMatrix();
 
-        const mainCamera = oCamera;
+        let mainCamera: Three.Camera = oCamera;
 
         const scene = new Three.Scene();
 
         const ambientLight = new Three.AmbientLight();
-        ambientLight.intensity = 0.5;
+        ambientLight.intensity = 0.25;
 
         const yellow = new Three.Mesh(geometry.stars.medium, materials.stars.yellow);
         yellow.position.set(-100, 0, 0);
 
         const giantGroup = new Three.Group();
         const giantPlanetGroup = new Three.Group();
-        giantPlanetGroup.position.set(0, -200, 0);
+        giantPlanetGroup.position.set(-200, 0, 0);
         giantGroup.add(giantPlanetGroup);
 
         const giant = new Three.Mesh(geometry.planets.huge, materials.planets.volcanic);
@@ -501,49 +520,114 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
         const tinyGroup = new Three.Group();
 
         const tinyPlanetGroup = new Three.Group();
-        tinyPlanetGroup.position.set(0, -100, 0);
+        tinyPlanetGroup.position.set(0, -300, 0);
         tinyGroup.add(tinyPlanetGroup);
 
-        const tiny = new Three.Mesh(geometry.planets.tiny, materials.planets.ocean);
+        const pointLight = new Three.PointLight(new Three.Color('#ffffff'));
+        pointLight.intensity = 1.0;
+        pointLight.position.set(0, 0, 0);
+
+        const blue = new Three.Mesh(geometry.stars.medium, materials.stars.orange);
+        blue.position.set(0, 0, 0);
+
+        scene.add(pointLight, tinyGroup, giantGroup, ambientLight);
+
+        const blueGlowMaterial = new GlowMaterial({
+            color: new Three.Color('#fd8d24'),
+            scale: 2,
+        });
+        const blueGlow = new Three.Mesh(blue.geometry, blueGlowMaterial);
+        scene.add(blue, blueGlow);
+
+        /*const plane = new Three.Mesh(new Three.PlaneBufferGeometry(1, 1, 25, 25), new Three.MeshBasicMaterial());
+        plane.scale.setScalar(100);
+        plane.position.set(0, 0, 0);
+        scene.add(plane);*/
+
+        const verticesOfCube = [
+            -1,-1,-1,    1,-1,-1,    1, 1,-1,    -1, 1,-1,
+            -1,-1, 1,    1,-1, 1,    1, 1, 1,    -1, 1, 1,
+        ];
+        
+        const indicesOfFaces = [
+            2,1,0,    0,3,2,
+            0,4,7,    7,3,0,
+            0,1,5,    5,4,0,
+            1,2,6,    6,5,1,
+            2,3,7,    7,6,2,
+            4,5,6,    6,7,4
+        ];
+
+        const detail = 12;
+        const polyhedron = new Three.Mesh(new Three.PolyhedronBufferGeometry(verticesOfCube, indicesOfFaces, 1, detail), new Three.MeshNormalMaterial({ flatShading: true }));
+        polyhedron.position.set(200, 0, 0);
+        polyhedron.scale.setScalar(50);
+        scene.add(polyhedron);
+
+        const icoso = new Three.Mesh(new Three.IcosahedronBufferGeometry(1, detail), new Three.MeshNormalMaterial({ flatShading: true }));
+        icoso.position.set(-200, 0, 0);
+        icoso.scale.setScalar(50);
+        scene.add(icoso);
+
+        const position = icoso.geometry.getAttribute('position');
+        const points: Record<string, [number, number]> = {};
+        const maxJitter = 2.5;
+        for (let i = 0; i < position.count; i++) {
+            const x = position.getX(i);
+            const y = position.getY(i);
+            const z = position.getZ(i);
+
+            const cacheIndex = `${x}:${y}:${z}`;
+
+            if (points[cacheIndex] !== undefined) {
+                continue;
+            }
+
+            const point = cartesianToSpherical([x, y, z]);
+            const [lambda, phi] = rotateAngle([Math.random() * maxJitter - maxJitter / 2, Math.random() * maxJitter - maxJitter / 2])(point);
+
+            points[cacheIndex] = [lambda, phi];
+        }
+
+        const vt = new ThreeVoronoi(new Array<number>().concat(...Object.values(points)));
+        const vtpoints = new Array<Three.Vector3>();
+        for (let triangle of vt.triangles()) {
+            triangle.forEach((point) => {
+                vtpoints.push(new Three.Vector3().setFromSphericalCoords(1, point[1], point[0]));
+            });
+        }
+
+        console.log(Object.values(points)[0]);
+        console.log(vt.point(0));
+
+        const vmesh = new Three.Mesh(new Three.BufferGeometry().setFromPoints(vtpoints), new Three.MeshNormalMaterial({ flatShading: true }));
+        vmesh.position.set(0, 200, 0);
+        vmesh.scale.setScalar(50);
+        scene.add(vmesh);
+
+        const tiny = new Three.Mesh(geometry.planets.huge, materials.planets.terran);
         tiny.visible = true;
         tinyPlanetGroup.add(tiny);
 
-        const tinyCloudMaterial = new Three.MeshLambertMaterial({
+        const tinyCloudMaterial = new Three.MeshPhongMaterial({
             transparent: true,
             side: Three.DoubleSide,
+            //blending: Three.AdditiveBlending,
         });
         const tinyClouds = new Three.Mesh(tiny.geometry, tinyCloudMaterial);
-        tinyClouds.scale.setScalar(1.01);
+        tinyClouds.scale.multiplyScalar(1.005);
         tinyClouds.visible = false;
         tinyPlanetGroup.add(tinyClouds);
 
-        new Three.TextureLoader().load('Clouds-EQUIRECTANGULAR-1-2048x1024.png', (cloudTexture) => {
+        new Three.TextureLoader().load('Paradise_Clouds.png', (cloudTexture) => {
             tinyCloudMaterial.map = cloudTexture;
-            tinyCloudMaterial.alphaMap = cloudTexture;
+            //tinyCloudMaterial.alphaMap = cloudTexture;
             tinyClouds.visible = true;
         });
 
-        const pointLight = new Three.PointLight(new Three.Color('#537bff'));
-        pointLight.intensity = 1;
-        pointLight.position.set(0, 0, 0);
-
-        const blue = new Three.Mesh(geometry.stars.supergiant, materials.stars.blue);
-        blue.position.set(0, 0, 0);
-
-        scene.add(pointLight, tinyGroup, giantGroup, blue, ambientLight);
-
-        const glowWorldPosition = new Three.Vector3();
-        const cameraWorldDirection = new Three.Vector3();
-        blue.getWorldPosition(glowWorldPosition);
-        mainCamera.getWorldDirection(cameraWorldDirection);
-
-        const blueGlowMaterial = new GlowMaterial({
-            color: new Three.Color('red'),
-            scale: 4,
-        });
-        blueGlowMaterial.viewVector = new Three.Vector3().subVectors(mainCamera.position, glowWorldPosition).projectOnVector(cameraWorldDirection);
-        const blueGlow = new Three.Mesh(blue.geometry, blueGlowMaterial);
-        scene.add(blueGlow);
+        new Three.TextureLoader().load('Paradise_NormalClouds.png', (cloudTexture) => {
+            tinyCloudMaterial.normalMap = cloudTexture;
+        })
 
         const giantWorldPosition = new Three.Vector3();
         const tinyWorldPosition = new Three.Vector3();
@@ -551,41 +635,77 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
         tinyPlanetGroup.getWorldPosition(tinyWorldPosition);
 
         const stars = new Array<AtmosphereStar>({
-            position: new Three.Vector3(-Math.tan(Math.PI / 4) * 500, 0, 500),
+            position: new Three.Vector3(0, 0, 0),
             color: pointLight.color,
-            e: 25,
+            e: 15,
         }/*, {
             position: new Three.Vector3(500, 0, 0),
             color: new Three.Color('red'),
             e: 10,
         }*/);
 
-        const tinyAtmosphereMaterial = new AtmosphereMaterial({
-            outerRadius: 17,
+        const tinyAtmosphereMaterial = new AtmosphereMaterialV2({
+            planetRadius: 27,
+            atmosphereRadius: 30,
+            wavelength: new Three.Vector3(700, 530, 440),
+            falloffFactor: 15,
+            densityModifier: 1,
+            scatteringStrength: 1,
+            gravity: -0.9,
+            planetPosition: tinyWorldPosition,
+            stars: new Array<AtmosphereStar>({
+                position: new Three.Vector3(0, 0, 0),
+                color: new Three.Color('white'),
+                e: 15,
+            }),
+        });
+        /*new AtmosphereMaterial({
+            outerRadius: 16,
             innerRadius: 15,
             planetWorldPosition: tinyWorldPosition,
             wavelength: new Three.Vector3(0.3, 0.7, 1.0),
-            kr: 0.0166,//0.166,
-            km: 0.0025,//0.0025,
-            gravity: -0.9,
+            kr: 0.0166,//0.166,//0.166,
+            km: 0.0025,//0.0025,//0.0025,
+            scale: 4,
+            gravity: -0.75,
             stars,
-        });
+        });*/
 
-        const tinyAtmosphere = new Three.Mesh(tiny.geometry, tinyAtmosphereMaterial);
+        const tinyAtmosphere = new Three.Mesh(new Three.SphereBufferGeometry(30, 512, 512), tinyAtmosphereMaterial);
         tinyPlanetGroup.add(tinyAtmosphere);
 
-        const giantAtmosphereMaterial = new AtmosphereMaterial({
-            outerRadius: 29,
+        const giantAtmosphereMaterial = new AtmosphereMaterialV2({
+            planetRadius: 27,
+            atmosphereRadius: 30,
+            wavelength: new Three.Vector3(700, 530, 440),
+            falloffFactor: 15,
+            densityModifier: 1,
+            scatteringStrength: 1,
+            gravity: -0.9,
+            planetPosition: giantWorldPosition,
+            stars: new Array<AtmosphereStar>({
+                position: new Three.Vector3(0, 0, 0),
+                color: new Three.Color('#ff4112'),
+                e: 15,
+            }),
+        });
+        /*new AtmosphereMaterial({
+            outerRadius: 28,
             innerRadius: 27,
             planetWorldPosition: giantWorldPosition,
-            wavelength: new Three.Vector3(1.0, 0.3, 0.3),
-            kr: 0.0566,
-            km: 0.0025,
-            gravity: -0.7,
-            stars,
-        });
+            wavelength: new Three.Vector3(0.3, 0.5, 0.7),
+            kr: 0.00166,
+            km: 0.00025,
+            scale: 2,
+            gravity: -0.8,
+            stars,/*: new Array<AtmosphereStar>({
+                position: new Three.Vector3(0, 0, 0),
+                color: new Three.Color('#ff4112'),
+                e: 15,
+            }),*/
+        //});
 
-        const giantAtmosphere = new Three.Mesh(giant.geometry, giantAtmosphereMaterial);
+        const giantAtmosphere = new Three.Mesh(new Three.SphereBufferGeometry(30, 512, 512), giantAtmosphereMaterial);
         giantPlanetGroup.add(giantAtmosphere);
 
         const backgroundScale = aspectRatio > backgroundAspectRatio
@@ -597,12 +717,23 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
         backgroundPass.material = new ScaledTextureMaterial({scale: backgroundScale});
         backgroundPass.uniforms = backgroundPass.material.uniforms;
 
+        const clearColor = new Three.Color();
+        renderer.getClearColor(clearColor);
+        const clearAlpha = renderer.getClearAlpha();
+
+        //const aaRenderPass = new SSAARenderPass(scene, mainCamera, clearColor, clearAlpha);
+        //const aaRenderPass = new TAARenderPass(scene, mainCamera, new Three.Color('black'), 1.0);
+        //aaRenderPass.needsSwap = true;
+        //aaRenderPass.sampleLevel = 16;
+
         const mainView = new EffectView({
             renderer,
             scene,
             camera: mainCamera,
             backgroundEffects: new Array<Pass>(backgroundPass),
-            clearColor: new Three.Color('red'),
+            //postProcessingEffects: new Array<Pass>(fxaaPass),
+            clearColor: false,
+            //antialias: true,
         });
 
         const resizeObserver = new ResizeObserver((entries) => {
@@ -629,13 +760,23 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
 
         resizeObserver.observe(canvas);
 
+        let orthographicMode = true;
+
         const onClick = (e: MouseEvent) => {
-            const raycaster = new Three.Raycaster();
-            raycaster.setFromCamera({x: (e.clientX / window.innerWidth) * 2 - 1, y: -(e.clientY / window.innerHeight) * 2 + 1}, mainCamera);
-            const intersection = raycaster.intersectObjects(scene.children)
-            if (intersection.length) {
-                intersection[0].object.position.y += 100;
+            //const raycaster = new Three.Raycaster();
+            //raycaster.setFromCamera({x: (e.clientX / window.innerWidth) * 2 - 1, y: -(e.clientY / window.innerHeight) * 2 + 1}, mainCamera);
+            //const intersection = raycaster.intersectObjects(scene.children)
+            //if (intersection.length) {
+            //    intersection[0].object.position.y += 100;
+            //}
+            if (orthographicMode) {
+                mainView.camera = mainView.camera = pCamera;
+                
+            } else {
+                mainView.camera = mainView.camera = oCamera;
             }
+
+            orthographicMode = !orthographicMode;
         }
 
         canvas.addEventListener('click', onClick);
@@ -645,18 +786,23 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
                 const delta = timestamp - previousTimestampRef.current;
 
                 giant.rotation.z += Math.PI * 2 / 10000 * delta;
-                tiny.rotation.z += Math.PI * 2 / 10000 * delta;
-                tinyClouds.rotation.z += Math.PI * 2 / 5000 * delta;
-                tinyGroup.rotation.z += Math.PI * 2 / 10000 * delta;
-                giantGroup.rotation.z += Math.PI * 2 / 20000 * delta;
+                tiny.rotation.z += Math.PI * 2 / 90000 * delta;
+                tinyClouds.rotation.z += Math.PI * 2 / 20000 * delta;
+                tinyGroup.rotation.z += Math.PI * 2 / 42000 * delta;
+                giantGroup.rotation.z += Math.PI * 2 / 30000 * delta;
 
                 const tinyWorldPosition = new Three.Vector3();
                 tinyAtmosphere.getWorldPosition(tinyWorldPosition);
                 const giantWorldPosition = new Three.Vector3();
                 giantAtmosphere.getWorldPosition(giantWorldPosition);
 
-                tinyAtmosphereMaterial.uniforms.vPlanetWorldPosition.value = tinyWorldPosition;
-                giantAtmosphereMaterial.uniforms.vPlanetWorldPosition.value = giantWorldPosition;
+                tinyAtmosphereMaterial.uniforms.vPlanetWorldOrigin.value = tinyWorldPosition;
+                giantAtmosphereMaterial.uniforms.vPlanetWorldOrigin.value = giantWorldPosition;
+
+                pCamera.position.set(tinyWorldPosition.x, tinyWorldPosition.y, tinyWorldPosition.z);
+                pCamera.position.y += 60;
+                pCamera.lookAt(tinyWorldPosition);
+                pCamera.updateProjectionMatrix();
 
                 mainView.render();
             }

@@ -1,7 +1,7 @@
-import { BackSide, Color, IUniform, MeshPhongMaterial, Vector3 } from 'three';
+import { AddEquation, AdditiveBlending, BackSide, Color, CustomBlending, IUniform, MeshBasicMaterial, MeshPhongMaterial, OneMinusDstColorFactor, OneMinusSrcColorFactor, SrcAlphaFactor, SrcColorFactor, Vector3 } from 'three';
 import CustomShaderMaterial from 'three-custom-shader-material/vanilla';
 
-const vert = (numStars: number = 1) => `
+const vert = (numStars: number = 1, numOutSamples: number = 5, numInSamples: number = 5) => `
 struct Star {
     vec3 position;
     vec3 color;
@@ -9,108 +9,155 @@ struct Star {
 };
 
 #define NUM_STARS ${numStars}
+#define NUM_OUT_SAMPLES ${numOutSamples}
+#define NUM_IN_SAMPLES ${numInSamples}
+#define MAX 10000.0
 
-uniform vec3 vPlanetWorldPosition;
-uniform float fInnerRadius;
-uniform float fOuterRadius;
-uniform float fScale;
-uniform float fKr;
-uniform float fKm;
-uniform float fKr4PI;
-uniform float fKm4PI;
+uniform float fAtmosphereRadius;
+uniform float fPlanetRadius;
+uniform float fFallofFactor;
+uniform float fScatteringStrength;
+uniform float fDensityModifier;
 uniform float g;
-uniform float gg;
-uniform vec3 v3InvWavelength;
-uniform float fScaleDepth;
+uniform vec3 vWavelength;
+uniform vec3 vPlanetWorldOrigin;
 uniform Star stars[NUM_STARS];
-
-const float fSamples = 5.0;
-const int nSamples = 5;
 
 varying vec3 v3FrontColor;
 
-float scale(float fCos)
+vec2 solveQuadratic(float b, float c)
 {
-    float x = 1.0 - fCos;
-    return fScaleDepth * exp(-0.00287 + x*(0.459 + x*(3.83 + x*(-6.80 + x*5.25))));
+    float discr = b * b - c;
+    if (discr < 0.0) {
+        return vec2(MAX, -MAX);
+    }
+
+    discr = sqrt(discr);
+    float t0 = -b - discr;
+    float t1 = -b + discr;
+    return vec2(min(t0, t1), max(t0, t1));
 }
 
-void calcColor() {
-    vec3 v3Pos = vec3(modelMatrix * vec4(position, 1.0)) - vPlanetWorldPosition;
-    vec3 v3CameraPos = vViewPosition - vPlanetWorldPosition;
-    vec3 v3Direction = v3CameraPos - v3Pos;
-    float fScale = 1.0 / (fOuterRadius - fInnerRadius);
-    float fScaleOverScaleDepth = fScale / fScaleDepth;
-    float fCameraHeight = length(v3CameraPos);
+vec2 checkSphereQuadratic(vec3 p, vec3 dir, float r) {
+    float b = dot(p, dir);
+    float c = dot(p, p) - r * r;
+    return solveQuadratic(b, c);
+}
 
-    // Get the ray from the camera to the vertex and its length (which is the far point of the ray passing through the atmosphere)
-    vec3 v3Ray = v3Pos - v3CameraPos;
-    float fFar = length(v3Ray);
-    v3Ray /= fFar;
+vec2 checkSphere(vec3 p, vec3 dir, float r) {
+    float b = dot( p, dir );
+    float c = dot( p, p ) - r * r;
 
-    // Calculate the closest intersection of the ray with the outer atmosphere (which is the near point of the ray passing through the atmosphere)
-    float B = 2.0 * dot(v3CameraPos, v3Ray);
-    float C = fCameraHeight * fCameraHeight - fOuterRadius * fOuterRadius;
-    float fDet = max(0.0, B*B - 4.0 * C);
-    float fNear = 0.5 * (-B - sqrt(fDet));
+    float d = b * b - c;
+    if ( d < 0.0 ) {
+        return vec2( MAX, -MAX );
+    }
+    d = sqrt( d );
 
-    // Calculate the ray's starting position, then calculate its scattering offset
-    vec3 v3Start = v3CameraPos + v3Ray * fNear;
-    fFar -= fNear;
-    float fStartAngle = dot(v3Ray, v3Start) / fOuterRadius;
-    float fStartDepth = exp(-1.0 / fScaleDepth);
-    float fStartOffset = fStartDepth*scale(fStartAngle);
+    return vec2( -b - d, -b + d );
+}
 
-    // Initialize the scattering loop variables
-    float fSampleLength = fFar / fSamples;
-    float fScaledLength = fSampleLength * fScale;
-    vec3 v3SampleRay = v3Ray * fSampleLength;
-    vec3 v3SamplePoint = v3Start + v3SampleRay * 0.5;
+bool hasIntersection(vec2 intersections) {
+    return intersections.y > intersections.x;
+}
 
-    // Now loop through the sample rays
-    v3FrontColor = vec3(0.0);
-    for(int s=0; s<nSamples; s++)
-    {
-        float fHeight = length(v3SamplePoint);
-        float fDepth = exp(fScaleOverScaleDepth * (fInnerRadius - fHeight));
-        float fCameraAngle = dot(v3Ray, v3SamplePoint) / fHeight;
+// cc = cos angle ^ 2
+float rayleighPhase(float cc) {
+    return 3.0 / (16.0 * PI) * (1.0 + cc);
+}
 
-        #if NUM_STARS > 0
-        #pragma unroll_loop_start
-        for ( int i = 0; i < NUM_STARS; i ++ ) {
-            Star star = stars[i];
-            vec3 v3LightPos = normalize(star.position - vPlanetWorldPosition);
+float miePhase(float g, float gg, float c, float cc) {
+    float a = ( 1.0 - gg ) * ( 1.0 + cc );
 
-            float fLightAngle = dot(v3LightPos, v3SamplePoint) / fHeight;
-            float fScatter = (fStartOffset + fDepth*(scale(fLightAngle) - scale(fCameraAngle)));
+    float b = 1.0 + gg - 2.0 * g * c;
+    b *= sqrt( b ) * (2.0 + gg);
 
-            vec3 v3Attenuate = exp(-fScatter * (v3InvWavelength * fKr4PI + fKm4PI));
-            v3FrontColor += v3Attenuate * (fDepth * fScaledLength);
-            v3SamplePoint += v3SampleRay;
-        }
-        #pragma unroll_loop_end
-        #endif
+    return ( 3.0 / 8.0 / PI ) * a / b;
+}
+
+float opticalDensity(vec3 vAtmoPoint) {
+    float fHeight = length(vAtmoPoint) - fPlanetRadius;
+    fHeight = fHeight / (fAtmosphereRadius - fPlanetRadius);
+    return exp(-fHeight * fFallofFactor) * fDensityModifier * (1.0 - fHeight);
+}
+
+float inOpticalDepth(vec3 vAtmoPoint, vec3 vDir, float fDistance) {
+    float fSegmentLength = fDistance / float(NUM_IN_SAMPLES);
+
+    float fOpticalDepth = 0.0;
+    for (int i = 0; i < NUM_IN_SAMPLES; i++) {
+        fOpticalDepth += opticalDensity(vAtmoPoint) * fSegmentLength;
+        vAtmoPoint += vDir * fSegmentLength;
     }
 
-    #if NUM_STARS > 0
-    #pragma unroll_loop_start
+    return fOpticalDepth;
+}
+
+vec3 calculateStarLights(vec3 vAtmoPoint, vec3 vEyeDir, float fViewOpticalDepth, float fLocalDensity, vec3 vScatteringCoeffs) {
+    vec3 vTotalStarLight = vec3(0.0);
     for (int i = 0; i < NUM_STARS; i++) {
         Star star = stars[i];
-        vec3 v3LightPos = normalize(star.position - vPlanetWorldPosition);
-        // Finally, scale the Mie and Rayleigh colors and set up the varying variables for the pixel shader
-        vec3 v3FrontSecondaryColor = v3FrontColor * fKm * star.e;
-        v3FrontColor *= (v3InvWavelength * fKr * star.e * star.color);
+        vec3 vStarDir = normalize(star.position - vPlanetWorldOrigin);
 
-        float fCos = dot(v3LightPos, v3Direction) / length(v3Direction);
-        float fMiePhase = 1.5 * ((1.0 - gg) / (2.0 + gg)) * (1.0 + fCos*fCos) / pow(1.0 + gg - 2.0*g*fCos, 1.5);
-        v3FrontColor += fMiePhase * v3FrontSecondaryColor;
+        float fStarPathLength = fAtmosphereRadius - length(vAtmoPoint);
+
+        float fStarMu = dot(vEyeDir, -vStarDir);
+        float fStarMu2 = fStarMu * fStarMu;
+
+        float fStarOpticalDepth = inOpticalDepth(vAtmoPoint, vStarDir, fStarPathLength);
+
+        vec3 vTransmittance = exp(-(fStarOpticalDepth + fViewOpticalDepth) * vScatteringCoeffs);
+        vTotalStarLight += vTransmittance * fLocalDensity * (rayleighPhase(fStarMu2) * vScatteringCoeffs + miePhase(g, g * g, fStarMu, fStarMu2)) * star.e * star.color;
     }
-    #pragma unroll_loop_end
-    #endif
+
+    return vTotalStarLight;
+}
+
+vec3 calculateLight(vec3 vInitialPoint, vec3 vEyeDir, float fPathLength) {
+    float fSegmentLength = fPathLength / float(NUM_OUT_SAMPLES);
+    vec3 vScatteringCoeffs = pow(400.0 / vWavelength.rgb, vec3(4.0)) * fScatteringStrength;
+
+    vec3 vAtmoPoint = vInitialPoint + vEyeDir * fPathLength * 0.5;
+    
+    vec3 vTotalLight = vec3(0.0);
+    float fViewOpticalDepth = 0.0;
+    for (int s = 0; s < NUM_OUT_SAMPLES; s++) {
+        float fLocalDensity = opticalDensity(vAtmoPoint) * fSegmentLength;
+
+        fViewOpticalDepth += fLocalDensity;
+
+        vTotalLight += calculateStarLights(vAtmoPoint, vEyeDir, fViewOpticalDepth, fLocalDensity, vScatteringCoeffs);
+
+        vAtmoPoint += vEyeDir * fPathLength;
+    }
+
+    return vTotalLight;
+}
+
+vec3 calcColor() {
+    // Calculate planet world origin based on pre-scale values
+    vec3 vWorldPosition = vec3(modelMatrix * vec4(position, 1.0));
+
+    vec3 vEye = cameraPosition - vPlanetWorldOrigin;
+    vec3 vEyeDir = normalize(vWorldPosition - cameraPosition);
+    if (isOrthographic) {
+        vEyeDir = normalize( vec3( - viewMatrix[ 0 ][ 2 ], - viewMatrix[ 1 ][ 2 ], - viewMatrix[ 2 ][ 2 ] ) );
+        vEye = vWorldPosition - vPlanetWorldOrigin  - (vEyeDir * fAtmosphereRadius * 4.0);
+    }
+
+    vec2 vAtmosphereIntersection = checkSphereQuadratic(vEye, vEyeDir, fAtmosphereRadius);
+    vec2 vPlanetIntersection = checkSphereQuadratic(vEye, vEyeDir, fPlanetRadius);
+    if (hasIntersection(vPlanetIntersection)) {
+        //vAtmosphereIntersection.y = vPlanetIntersection.x;
+    }
+
+    vec3 vInitialPoint = vEye + (vEyeDir * vAtmosphereIntersection.x);
+
+    return calculateLight(vInitialPoint, vEyeDir, vAtmosphereIntersection.y - vAtmosphereIntersection.x);
 }
 
 void main() {
-    calcColor();
+    v3FrontColor = calcColor();
     csm_Position = position;
 }
 `;
@@ -120,7 +167,6 @@ varying vec3 v3FrontColor;
 
 void main() {
     csm_FragColor = vec4(v3FrontColor, 1.0);
-	csm_FragColor.a = csm_FragColor.b;
 }
 `
 
@@ -131,14 +177,14 @@ export type AtmosphereStar = {
 }
 
 export type AtmospherePropsV2 = {
-    outerRadius: number;
-    innerRadius: number;
-    scaleDepth: number;
-    planetWorldPosition: Vector3;
+    atmosphereRadius: number;
+    planetRadius: number;
     wavelength: Vector3;
-    km: number;
-    kr: number;
+    falloffFactor: number;
+    scatteringStrength: number;
+    densityModifier: number;
     gravity: number;
+    planetPosition: Vector3;
     stars: Array<AtmosphereStar>;
 }
 
@@ -147,40 +193,34 @@ export class AtmosphereMaterialV2 extends CustomShaderMaterial {
         super(
             MeshPhongMaterial,
             frag,
-            vert(props.stars.length),
+            vert(props.stars.length, 10, 10),
             {
-                fInnerRadius: {
-                    value: props.innerRadius,
+                /*fAtmosphereScale: {
+                    value: props.atmosphereScale,
+                },*/
+                fAtmosphereRadius: {
+                    value: props.atmosphereRadius,
                 },
-                fOuterRadius: {
-                    value: props.outerRadius,
+                fPlanetRadius: {
+                    value: props.planetRadius,
                 },
-                vPlanetWorldPosition: {
-                    value: props.planetWorldPosition,
+                fFallofFactor: {
+                    value: props.falloffFactor,
                 },
-                fScaleDepth: {
-                    value: props.scaleDepth,
+                fScatteringStrength: {
+                    value: props.scatteringStrength,
                 },
-                v3InvWavelength: {
-                    value: new Vector3(1 / Math.pow(props.wavelength.x, 4), 1 / Math.pow(props.wavelength.y, 4), 1 / Math.pow(props.wavelength.z, 4)),
+                fDensityModifier: {
+                    value: props.densityModifier,
                 },
-                fKr: {
-                    value: props.kr,
-                },
-                fKm: {
-                    value: props.km,
-                },
-                fKr4PI: {
-                    value: props.kr * 4 * Math.PI,
-                },
-                fKm4PI: {
-                    value: props.km * 4 * Math.PI,
+                vWavelength: {
+                    value: props.wavelength,
                 },
                 g: {
                     value: props.gravity,
                 },
-                gg: {
-                    value: props.gravity * props.gravity,
+                vPlanetWorldOrigin: {
+                    value: props.planetPosition,
                 },
                 stars: {
                     value: props.stars,
@@ -194,7 +234,7 @@ export class AtmosphereMaterialV2 extends CustomShaderMaterial {
             {
                 color: new Color(1.0),
                 transparent: true,
-                side: BackSide,
+                blending: AdditiveBlending,
             }
         );
     }
