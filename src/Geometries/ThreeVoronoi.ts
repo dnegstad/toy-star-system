@@ -76,7 +76,7 @@ export const radiansToCartesian = ([lambda, phi]: SphericalPoint): CartesianPoin
 }
 
 export class ThreeVoronoi {
-    constructor(points: Float32Array | BufferAttribute) {
+    constructor(points: ArrayLike<number> | BufferAttribute) {
         this._points = points instanceof BufferAttribute ? points : new Float32BufferAttribute(points, 3);
         const numPoints = this._points.count;
         const geoPoints = new Float64Array(numPoints * 2);
@@ -106,6 +106,14 @@ export class ThreeVoronoi {
         this._triangles = triangles;
         this._halfedges = halfedges;
 
+        this._cellHalfedgeIndex = new Int32Array(this._points.count);
+        for (let e = 0; e < this._triangles.length; e++) {
+            const endpoint = this._triangles[nextHalfEdge(e)];
+            if (this._cellHalfedgeIndex[endpoint] === 0 || this._cellHalfedgeIndex[e] === -1) {
+                this._cellHalfedgeIndex[endpoint] = e;
+            }
+        }
+
         const centers = new Float64Array(triangles.length);
         let index = 0;
         for (let triangle of this.triangles()) {
@@ -114,7 +122,7 @@ export class ThreeVoronoi {
             index++;
         }
 
-        this._centers = new Float32BufferAttribute(centers, 3);
+        this._cellVertices = new Float32BufferAttribute(centers, 3);
     }
 
     protected static patchInfinity(delaunay: Delaunator<any>, index: number) {
@@ -132,7 +140,6 @@ export class ThreeVoronoi {
             }
         }
 
-       
         const newTriangles = new Uint32Array(numSides + 3 * numUnpairedSides);
         const newHalfedges = new Int32Array(numSides + 3 * numUnpairedSides);
         newTriangles.set(triangles);
@@ -171,6 +178,19 @@ export class ThreeVoronoi {
         return (e/3) | 0;
     }
 
+    circulateCells(index: number) {
+        const firstEdge = this._cellHalfedgeIndex[index];
+        let incoming = firstEdge;
+        const cells = new Array<number>();
+        do {
+            cells.push(this._triangles[incoming]);
+            const outgoing = ThreeVoronoi.nextHalfEdge(incoming);
+            incoming = this._halfedges[outgoing];
+        } while (incoming !== -1 && incoming !== firstEdge);
+
+        return cells;
+    }
+
     static makeDistributedPoints(count: number, iterations: number = 2, seed?: string) {
         return new ThreeVoronoi(new Float64Array(pointBuilder(count, iterations, seed)));
     }
@@ -179,13 +199,7 @@ export class ThreeVoronoi {
         return new Vector3(this._points.getX(index), this._points.getY(index), this._points.getZ(index));
     }
 
-    *points() {
-        for (let i = 0; i < this._points.count; i++) {
-            yield new Vector3(this._points.getX(i), this._points.getY(i), this._points.getZ(i));
-        }
-    }
-
-    get rawPoints() {
+    get points() {
         return this._points;
     }
 
@@ -216,11 +230,11 @@ export class ThreeVoronoi {
     }
 
     center(index: number): Vector3 {
-        return new Vector3(this._centers.getX(index), this._centers.getY(index), this._centers.getZ(index));
+        return new Vector3(this._cellVertices.getX(index), this._cellVertices.getY(index), this._cellVertices.getZ(index));
     }
 
     get rawCenters() {
-        return this._centers;
+        return this._cellVertices;
     }
 
     forEachVoronoiCell(callback: (p: number, vertices: Array<Vector3>) => void) {
@@ -263,9 +277,10 @@ export class ThreeVoronoi {
 
     private readonly _points: BufferAttribute;
     private readonly _geoPoints: BufferAttribute;
-    private readonly _centers: BufferAttribute;
+    private readonly _cellVertices: BufferAttribute;
     private readonly _triangles: Uint32Array;
     private readonly _halfedges: Int32Array;
+    private readonly _cellHalfedgeIndex: Int32Array;
 }
 
 const centroid = (ax: number, ay: number, az: number, bx: number, by: number, bz: number, cx: number, cy: number, cz: number): [number, number, number] => {
