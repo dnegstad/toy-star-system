@@ -1,24 +1,26 @@
 /// <reference path="..\d3-geo-voronoi.d.ts" />
-import { CycleRaycast } from '@react-three/drei';
 import alea from 'alea';
-import { Delaunay } from 'd3-delaunay';
-import { geoDistance } from 'd3-geo';
-import { GeoVoronoi, geoVoronoi } from 'd3-geo-voronoi';
+import { geoCentroid, geoDistance, GeoProjection, geoRotation, geoStereographic } from 'd3-geo';
 import Delaunator from 'delaunator';
-import { FeatureCollection } from 'geojson';
-import { BufferGeometry, Spherical, Vector2, Vector3 } from 'three/src/Three';
-import { number } from 'zod';
+import { BufferAttribute, Float32BufferAttribute, Float64BufferAttribute, Vector3 } from 'three';
 
-const edgesOfTriangle = (t: number) => [3 * t, 3 * t + 1, 3 * t + 2];
+const TAU = Math.PI * 2;
+const RADIANS = Math.PI / 180;
+const DEGREES = 180 / Math.PI;
+
+type SphericalPoint = [number, number];
+type CartesianPoint = [number, number, number];
+
+const edgesOfTriangle = (t: number): number[] => [3 * t, 3 * t + 1, 3 * t + 2];
 const triangleOfEdge = (e: number) => Math.floor(e / 3);
 const nextHalfEdge = (e: number) => e % 3 === 2 ? e - 2 : e + 1;
 const prevHalfEdge = (e: number) => e % 3 === 0 ? e + 2 : e - 1;
-const pointsOfTriangle = (delaunay: Delaunator<any>, t: number) => edgesOfTriangle(t).map(e => delaunay.triangles[e]);
-const forEachTriangleEdge = (points: ArrayLike<Vector2>, delaunay: Delaunator<any>, callback: (edge: number, p: Vector2, q: Vector2) => void) => {
-    for (let e = 0; e < delaunay.triangles.length; e++) {
-        if (e > delaunay.halfedges[e]) {
-            const p = points[delaunay.triangles[e]];
-            const q = points[delaunay.triangles[nextHalfEdge(e)]];
+const pointsOfTriangle = ({triangles}: {triangles: Uint32Array}, t: number): number[] => edgesOfTriangle(t).map(e => triangles[e]);
+const forEachTriangleEdge = (points: ArrayLike<number>, {triangles, halfedges}: {triangles: Uint32Array, halfedges: Int32Array}, callback: (edge: number, p: number, q: number) => void) => {
+    for (let e = 0; e < triangles.length; e++) {
+        if (e > halfedges[e]) {
+            const p = points[triangles[e]];
+            const q = points[triangles[nextHalfEdge(e)]];
             callback(e, p, q);
         }
     }
@@ -36,66 +38,16 @@ const trianglesAdjacentToTriangle = (delaunay: Delaunator<any>, t: number) => {
     return adjacentTriangles;
 }
 
-const circumcenter = (a: Vector2, b: Vector2, c: Vector2): Vector2 => {
-    const ad = a.x * a.y + a.x * a.y;
-    const bd = b.x * b.x + b.y * b.y;
-    const cd = c.x * c.x + c.y * c.y;
-    const D = 2 * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y));
-    return new Vector2(
-        1 / D * (ad * (b.y - c.y) + bd * (c.y - a.y) + cd * (a.y - b.y)),
-        1 / D * (ad * (c.x - b.x) + bd * (a.x - c.x) + cd * (b.x - a.x)),
-    );
-}
-
-const triangleCenter = (points: ArrayLike<Vector2>, delaunay: Delaunator<any>, t: number) => {
-    const vertices = pointsOfTriangle(delaunay, t).map(p => points[p]);
-    return circumcenter(vertices[0], vertices[1], vertices[2]);
-}
-
-const forEachVoronoiEdge = (points: ArrayLike<Vector2>, delaunay: Delaunator<any>, callback: (e: number, p: Vector2, q: Vector2) => void) => {
-    for (let e = 0; e < delaunay.triangles.length; e++) {
-        if (e < delaunay.halfedges[e]) {
-            const p = triangleCenter(points, delaunay, triangleOfEdge(e));
-            const q = triangleCenter(points, delaunay, triangleOfEdge(delaunay.halfedges[e]));
-            callback(e, p, q);
-        }
-    }
-}
-
-const edgesAroundPoint = (delaunay: Delaunator<any>, start: number) => {
+const edgesAroundPoint = ({halfedges}: {halfedges: Int32Array}, start: number) => {
     const result = new Array<number>();
     let incoming = start;
     do {
         result.push(incoming);
         const outgoing = nextHalfEdge(incoming);
-        incoming = delaunay.halfedges[outgoing];
+        incoming = halfedges[outgoing];
     } while (incoming !== -1 && incoming !== start);
     return result;
 }
-
-const forEachVoronoiCell = (points: ArrayLike<Vector2>, delaunay: Delaunator<any>, callback: (p: number, vertices: ArrayLike<Vector2>) => void) => {
-    const index = new Map(); // point id to half-edge id
-    for (let e = 0; e < delaunay.triangles.length; e++) {
-        const endpoint = delaunay.triangles[nextHalfEdge(e)];
-        if (!index.has(endpoint) || delaunay.halfedges[e] === -1) {
-            index.set(endpoint, e);
-        }
-    }
-    for (let p = 0; p < points.length; p++) {
-        const incoming = index.get(p);
-        const edges = edgesAroundPoint(delaunay, incoming);
-        const triangles = edges.map(triangleOfEdge);
-        const vertices = triangles.map(t => triangleCenter(points, delaunay, t));
-        callback(p, vertices);
-    }
-}
-
-const TAU = Math.PI * 2;
-const RADIANS = Math.PI / 180;
-const DEGREES = 180 / Math.PI;
-
-type SphericalPoint = [number, number];
-type CartesianPoint = [number, number, number];
 
 type Transform = (point: SphericalPoint) => SphericalPoint;
 
@@ -123,223 +75,201 @@ export const radiansToCartesian = ([lambda, phi]: SphericalPoint): CartesianPoin
     ];
 }
 
-const rotationIdentity: TransformWithInvert = ([lambda, phi]: SphericalPoint) => {
-    if (Math.abs(lambda) > Math.PI) {
-        lambda -= Math.round(lambda / TAU) * TAU;
-    }
-
-    return [lambda, phi];
-}
-rotationIdentity.invert = rotationIdentity;
-
-const innerRotationRadiansLambda = (deltaLambda: number): Transform => {
-    return ([lambda, phi]: SphericalPoint) => {
-        lambda += deltaLambda;
-        if (Math.abs(lambda) > Math.PI) {
-            lambda -= Math.round(lambda / TAU) * TAU;
-        }
-        return [lambda, phi];
-    }
-}
-
-const rotationRadiansLambda = (deltaLambda: number): TransformWithInvert => {
-    const transform = innerRotationRadiansLambda(deltaLambda) as TransformWithInvert;
-    transform.invert = innerRotationRadiansLambda(-deltaLambda);
-
-    return transform;
-}
-
-const rotationRadiansPhi = (deltaPhi: number): TransformWithInvert => {
-    const cosDeltaPhi = Math.cos(deltaPhi);
-    const sinDeltaPhi = Math.sin(deltaPhi);
-
-    const transform: TransformWithInvert = (point: SphericalPoint) => {
-        const [x, y, z] = radiansToCartesian(point);
-        const k = z * cosDeltaPhi + x * sinDeltaPhi;
-        return [
-            Math.atan2(y, x * cosDeltaPhi - z * sinDeltaPhi),
-            Math.asin(k),
-        ];
-    };
-
-    transform.invert = (point: SphericalPoint) => {
-        const [x, y, z] = radiansToCartesian(point);
-        const k = z;
-        return [
-            Math.atan2(y, x * cosDeltaPhi + k * sinDeltaPhi),
-            Math.asin(k * cosDeltaPhi - x * sinDeltaPhi),
-        ];
-    }
-
-    return transform;
-}
-
-const composeTransform = (...transforms: Array<TransformWithInvert>): TransformWithInvert => {
-    const transform: TransformWithInvert = ([lambda, phi]: SphericalPoint): SphericalPoint => {
-        return transforms.reduce<SphericalPoint>((point, transform) => {
-            return transform(point);
-        }, [lambda, phi]);
-    }
-
-    transform.invert = ([lambda, phi]: SphericalPoint): SphericalPoint => {
-        return transforms.reverse().reduce<SphericalPoint>((point, transform) => {
-            return transform.invert(point);
-        }, [lambda, phi]);
-    }
-
-    return transform;
-}
-
-const rotateRadians = ([deltaLambda, deltaPhi]: SphericalPoint): TransformWithInvert => {
-    deltaLambda %= TAU;
-    if (deltaLambda) {
-        if (deltaPhi) {
-            return composeTransform(rotationRadiansLambda(deltaLambda), rotationRadiansPhi(deltaPhi));
-        } else {
-            return rotationRadiansLambda(deltaLambda);
-        }
-    } else if (deltaPhi) {
-        return rotationRadiansPhi(deltaPhi);
-    }
-
-    return rotationIdentity;
-}
-
-export const rotateAngle = ([deltaLambda, deltaPhi]: SphericalPoint): TransformWithInvert => {
-    const rotation = rotateRadians([deltaLambda * RADIANS, deltaPhi * RADIANS]);
-
-    const transform: TransformWithInvert = ([lambda, phi]: SphericalPoint) => {
-        const [transformedLambda, transformedPhi] = rotation([lambda * RADIANS, phi * RADIANS]);
-        return [transformedLambda * DEGREES, transformedPhi * DEGREES];
-    }
-
-    transform.invert = ([lambda, phi]: SphericalPoint) => {
-        const [transformedLambda, transformedPhi] = rotation.invert([lambda * RADIANS, phi * RADIANS]);
-        return [transformedLambda * DEGREES, transformedPhi * DEGREES];
-    }
-
-    return transform;
-}
-
-const projectStereographic: TransformWithInvert = ([lambda, phi]: SphericalPoint): SphericalPoint => {
-    const cy = Math.cos(phi * RADIANS);
-    const k = 1 + Math.cos(lambda * RADIANS) * cy;
-
-    return [
-        cy * Math.sin(lambda * RADIANS) / k,
-        Math.sin(phi * RADIANS) / k,
-    ];
-}
-projectStereographic.invert = ([lambda, phi]: SphericalPoint): SphericalPoint => {
-    const z = Math.sqrt(lambda * lambda + phi * phi);
-    const c = 2 * Math.atan(z);
-    const sinC = Math.sin(c);
-    const cosC = Math.cos(c);
-
-    return [
-        Math.atan2(lambda * sinC, z * cosC) * DEGREES,
-        Math.asin(z && phi * sinC / z) * DEGREES,
-    ];
-}
-
 export class ThreeVoronoi {
-    constructor(points: ArrayLike<number>) {
-        const projectedPoints = new Float64Array(points.length + 6);
+    constructor(points: Float32Array | BufferAttribute) {
+        this._points = points instanceof BufferAttribute ? points : new Float32BufferAttribute(points, 3);
+        const numPoints = this._points.count;
+        const geoPoints = new Float64Array(numPoints * 2);
+        const projectedPoints = new Float64Array(numPoints * 2 - 2);
 
-        const rotation = rotateAngle([points[0], points[1]]);
-        this._projection = composeTransform(rotateAngle(rotation.invert([180, 0])), projectStereographic);
+        const sphericalCandidate = cartesianToSpherical([this._points.getX(numPoints - 1), this._points.getY(numPoints - 1), this._points.getZ(numPoints - 1)]);
 
-        for (let i = 0; i < points.length; i += 2) {
-            projectedPoints.set(this._projection([points[i], points[i + 1]]), i);
-        }
+        const rotation = geoRotation(sphericalCandidate);
+        const projection = geoStereographic().translate([0,0]).rotate(rotation.invert([180, 0]));
 
-        const zeros = new Array<number>();
-        let max2 = 1;
-        for (let i = 0; i < points.length; i += 2) {
-            let m = projectedPoints[i] ** 2 + projectedPoints[i + 1] ** 2;
-            if (!isFinite(m) || m > 1e32) {
-                zeros.push(i);
-            } else if (m > max2) {
-                max2 = m;
+        for (let i = 0; i < numPoints; i++) {
+            const geoPoint = cartesianToSpherical([this._points.getX(i), this._points.getY(i), this._points.getZ(i)]);
+            // store the points cartesian representation since we are generating them anyway
+            geoPoints.set(geoPoint, i * 2);
+            // project all points but the one at infinity
+            if (i < numPoints - 1) {
+                projectedPoints.set(projection(geoPoint) as SphericalPoint, i * 2);
             }
         }
 
-        const FAR = 1e6 * Math.sqrt(max2);
+        this._geoPoints = new Float64BufferAttribute(geoPoints, 2);
 
-        // Set our point at the south pole to "infinity"
-        zeros.forEach((i) => (projectedPoints.set([FAR, 0], i * 2)));
+        const delaunay = new Delaunator(projectedPoints);
 
-        // Add complementary infinite horizon points to the rest of the projection
-        projectedPoints.set([0, FAR], points.length);
-        projectedPoints.set([-FAR, 0], points.length + 2);
-        projectedPoints.set([0, -FAR], points.length + 4);
+        const { triangles, halfedges } = ThreeVoronoi.patchInfinity(delaunay, numPoints - 1);
 
-        this._delaunay = new Delaunay(projectedPoints);
+        this._triangles = triangles;
+        this._halfedges = halfedges;
 
-        const { triangles, halfedges, inedges } = this._delaunay;
+        const centers = new Float64Array(triangles.length);
+        let index = 0;
+        for (let triangle of this.triangles()) {
+            const circumcenter = new Vector3(0, 0, 0).add(triangle[0]).add(triangle[1]).add(triangle[2]).divideScalar(3).normalize();
+            centers.set(circumcenter.toArray(), index * 3);
+            index++;
+        }
 
-        const degenerate = new Array<number>();
-        for (let i = 0; i < halfedges.length; i++) {
-            if (halfedges[i] < 0) {
-                const j = i % 3 == 2 ? i - 2 : i + 1;
-                const k = i % 3 == 0 ? i + 2 : i - 1;
-                const a = halfedges[j];
-                const b = halfedges[k];
-                halfedges[a] = b;
-                halfedges[b] = a;
-                halfedges[j] = halfedges[k] = -1;
-                triangles[i] = triangles[j] = triangles[k] = 0;
-                inedges[triangles[a]] = a % 3 == 0 ? a + 2 : a - 1;
-                inedges[triangles[b]] = b % 3 == 0 ? b + 2 : b - 1;
-                degenerate.push(Math.min(i, j, k));
-                i += 2 - (i % 3);
-            } else if (triangles[i] > projectedPoints.length - 3 - 1) {
-                triangles[i] = 0;
+        this._centers = new Float32BufferAttribute(centers, 3);
+    }
+
+    protected static patchInfinity(delaunay: Delaunator<any>, index: number) {
+        const { triangles, halfedges } = delaunay;
+        const numSides = triangles.length;
+
+        let numUnpairedSides = 0
+        let firstUnpairedSide = -1;
+        const pointIdToSideId = []; // seed to side
+        for (let s = 0; s < numSides; s++) {
+            if (halfedges[s] === -1) {
+                numUnpairedSides++;
+                pointIdToSideId[triangles[s]] = s;
+                firstUnpairedSide = s;
             }
         }
 
-        console.log(degenerate);
+       
+        const newTriangles = new Uint32Array(numSides + 3 * numUnpairedSides);
+        const newHalfedges = new Int32Array(numSides + 3 * numUnpairedSides);
+        newTriangles.set(triangles);
+        newHalfedges.set(halfedges);
+
+        for (let i = 0, s = firstUnpairedSide; i < numUnpairedSides; i++, s = pointIdToSideId[newTriangles[ThreeVoronoi.nextHalfEdge(s)]]) {
+            // Construct a pair for the unpaired side s
+            let newSide = numSides + 3 * i;
+            newHalfedges[s] = newSide;
+            newHalfedges[newSide] = s;
+            newTriangles[newSide] = newTriangles[ThreeVoronoi.nextHalfEdge(s)];
+            
+            // Construct a triangle connecting the new side to the south pole
+            newTriangles[newSide + 1] = newTriangles[s];
+            newTriangles[newSide + 2] = index;
+            let k = numSides + (3 * i + 4) % (3 * numUnpairedSides);
+            newHalfedges[newSide + 2] = k;
+            newHalfedges[k] = newSide + 2;
+        }
+
+        return {
+            triangles: newTriangles,
+            halfedges: newHalfedges,
+        };
+    }
+
+    static nextHalfEdge(e: number) {
+        return e % 3 === 2 ? e - 2 : e + 1;
+    }
+
+    static prevHalfEdge(e: number) {
+        return e % 3 === 0 ? e + 1 : e - 1;
+    }
+
+    static triangleForEdge(e: number) {
+        return (e/3) | 0;
     }
 
     static makeDistributedPoints(count: number, iterations: number = 2, seed?: string) {
-        return new ThreeVoronoi(pointBuilder(count, iterations, seed));
+        return new ThreeVoronoi(new Float64Array(pointBuilder(count, iterations, seed)));
     }
 
-    static excess(triangle: Array<SphericalPoint>) {
-        const cartesianPoints = triangle.map((p) => new Vector3().setFromSphericalCoords(1, p[1], p[0]));
-        return cartesianPoints[0].dot(cartesianPoints[2].cross(cartesianPoints[1]));
+    point(index: number): Vector3 {
+        return new Vector3(this._points.getX(index), this._points.getY(index), this._points.getZ(index));
     }
 
-    point(index: number): SphericalPoint {
-        return this._projection.invert([this._delaunay.points[index], this._delaunay.points[index + 1]]);
+    *points() {
+        for (let i = 0; i < this._points.count; i++) {
+            yield new Vector3(this._points.getX(i), this._points.getY(i), this._points.getZ(i));
+        }
+    }
+
+    get rawPoints() {
+        return this._points;
+    }
+
+    triangle(index: number): Array<Vector3> {
+        return [
+            this.point(this._triangles[index * 3]),
+            this.point(this._triangles[index * 3 + 1]),
+            this.point(this._triangles[index * 3 + 2]),
+        ];
     }
 
     *triangles() {
-        for (let i = 0; i < this._delaunay.triangles.length; i += 3) {
-            if (this._delaunay.triangles[i] === this._delaunay.triangles[i + 1] || this._delaunay.triangles[i + 1] === this._delaunay.triangles[i + 2]) {
-                continue;
-            }
+        for (let i = 0; i < this._triangles.length; i += 3) {
+            yield [
+                this.point(this._triangles[i]),
+                this.point(this._triangles[i + 1]),
+                this.point(this._triangles[i + 2]),
+            ];
+        }
+    }
 
-            const p0 = this.point(this._delaunay.triangles[i]);
-            const p1 = this.point(this._delaunay.triangles[i + 1]);
-            const p2 = this.point(this._delaunay.triangles[i + 2]);
+    get rawTriangles() {
+        return this._triangles;
+    }
 
-            if (ThreeVoronoi.excess([p0, p1, p2]) > 0) {
-                yield [p0, p1, p2];
+    get rawHalfEdges() {
+        return this._halfedges;
+    }
+
+    center(index: number): Vector3 {
+        return new Vector3(this._centers.getX(index), this._centers.getY(index), this._centers.getZ(index));
+    }
+
+    get rawCenters() {
+        return this._centers;
+    }
+
+    forEachVoronoiCell(callback: (p: number, vertices: Array<Vector3>) => void) {
+        for (let cell of this.voronoiCells()) {
+            callback(cell.point, cell.vertices);
+        }
+    }
+
+    *voronoiCells() {
+        const seen = new Set<number>();
+
+        for (let e = 0; e < this._triangles.length; e++) {
+            const p = this._triangles[nextHalfEdge(e)];
+            if (!seen.has(p)) {
+                seen.add(p);
+                const edges = edgesAroundPoint({halfedges: this._halfedges}, e);
+                const triangles = edges.map(triangleOfEdge);
+                const vertices = triangles.map(this.center.bind(this));
+                yield {point: p, vertices};
             }
         }
     }
 
-    get points() {
-        return this._delaunay.points;
+    get voronoiMesh() {
+        const geometry = new Array<Vector3>();
+            
+        for (let s = 0; s < this._triangles.length; s++) {
+            const inTriangle = (s / 3) | 0;
+            const outTriangle = (this._halfedges[s] / 3) | 0;
+            const beginPoint = this._triangles[s];
+                
+            geometry.push(
+                this.center(inTriangle),
+                this.center(outTriangle),
+                this.point(beginPoint),
+            );
+        }
+        return geometry;
     }
 
-    get halfedges() {
-        return this._delaunay.halfedges;
-    }
+    private readonly _points: BufferAttribute;
+    private readonly _geoPoints: BufferAttribute;
+    private readonly _centers: BufferAttribute;
+    private readonly _triangles: Uint32Array;
+    private readonly _halfedges: Int32Array;
+}
 
-    private readonly _delaunay: Delaunay<any>;
-    private readonly _projection: TransformWithInvert;
+const centroid = (ax: number, ay: number, az: number, bx: number, by: number, bz: number, cx: number, cy: number, cz: number): [number, number, number] => {
+    return [(ax+bx+cx)/3, (ay+by+cy)/3, (az+bz+cz)/3]
 }
 
 export const randomRange = (min: number, max: number, rng?: () => number) => {

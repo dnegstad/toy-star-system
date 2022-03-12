@@ -24,8 +24,9 @@ import { ScaledTextureMaterial } from '../Materials/ScaledTextureMaterial';
 import { AtmosphereMaterial, AtmosphereStar } from '../Materials/AtmosphereMaterial';
 import { GlowMaterial } from '../Materials/GlowMaterial';
 import { AtmosphereMaterialV2 } from '../Materials/AtmosphereMaterialV2';
-import { cartesianToSpherical, pointGenerator, rotateAngle, sphericalToCartesian, ThreeVoronoi } from '../Geometries/ThreeVoronoi';
+import { cartesianToSpherical, pointGenerator, sphericalToCartesian, ThreeVoronoi } from '../Geometries/ThreeVoronoi';
 import { number } from 'zod';
+import { geoRotation } from 'd3-geo';
 
 type StarMapProps = {
     machine: ActorRefFrom<StarMapMachine>;
@@ -494,10 +495,12 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
         oCamera.lookAt(0, 0, 0);
         oCamera.updateProjectionMatrix();
 
+        const cameraGroup = new Three.Group();
         const pCamera = new Three.PerspectiveCamera(40, aspectRatio, 10, 5000);
-        pCamera.position.set(0, -Math.tan(Math.PI / 12) * 500, 500);
+        pCamera.position.set(0, -Math.tan(Math.PI / 3) * 500, 500);
         pCamera.lookAt(0, 0, 0);
         pCamera.updateProjectionMatrix();
+        cameraGroup.add(pCamera);
 
         let mainCamera: Three.Camera = oCamera;
 
@@ -558,7 +561,7 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
             4,5,6,    6,7,4
         ];
 
-        const detail = 12;
+        const detail = 8;
         const polyhedron = new Three.Mesh(new Three.PolyhedronBufferGeometry(verticesOfCube, indicesOfFaces, 1, detail), new Three.MeshNormalMaterial({ flatShading: true }));
         polyhedron.position.set(200, 0, 0);
         polyhedron.scale.setScalar(50);
@@ -567,11 +570,11 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
         const icoso = new Three.Mesh(new Three.IcosahedronBufferGeometry(1, detail), new Three.MeshNormalMaterial({ flatShading: true }));
         icoso.position.set(-200, 0, 0);
         icoso.scale.setScalar(50);
-        scene.add(icoso);
+        //scene.add(icoso);
 
         const position = icoso.geometry.getAttribute('position');
-        const points: Record<string, [number, number]> = {};
-        const maxJitter = 2.5;
+        const points: Record<string, [number, number, number]> = {};
+        const maxJitter = 6;
         for (let i = 0; i < position.count; i++) {
             const x = position.getX(i);
             const y = position.getY(i);
@@ -584,24 +587,46 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
             }
 
             const point = cartesianToSpherical([x, y, z]);
-            const [lambda, phi] = rotateAngle([Math.random() * maxJitter - maxJitter / 2, Math.random() * maxJitter - maxJitter / 2])(point);
+            const [x2, y2, z2] = sphericalToCartesian(geoRotation([Math.random() * maxJitter - maxJitter / 2, Math.random() * maxJitter - maxJitter / 2])(geoRotation([Math.random() * maxJitter - maxJitter / 2, Math.random() * maxJitter - maxJitter / 2])(point)));
 
-            points[cacheIndex] = [lambda, phi];
+            points[cacheIndex] = [x2, y2, z2];
         }
 
+        const colors = new Array<number>();
+        const vertices = new Array<number>();
+
         const vt = new ThreeVoronoi(new Array<number>().concat(...Object.values(points)));
+        vt.forEachVoronoiCell((p, v) => {
+            const point = vt.point(p);
+
+            console.log(point, v);
+            const r = Math.random();
+            const g = Math.random();
+            const b = Math.random();
+
+            for (let i = 0; i < v.length; i++) {
+                const next = i + 1 < v.length ? i + 1 : 0;
+                vertices.push(...v[i].toArray(), ...v[next].toArray(), ...point.toArray());
+            }
+
+            for (let c = 0; c < 3 * v.length; c++) {
+                colors.push(r, g, b);
+            }
+        });
         const vtpoints = new Array<Three.Vector3>();
         for (let triangle of vt.triangles()) {
             triangle.forEach((point) => {
-                vtpoints.push(new Three.Vector3().setFromSphericalCoords(1, point[1], point[0]));
+                vtpoints.push(point);
             });
         }
 
-        console.log(Object.values(points)[0]);
-        console.log(vt.point(0));
+        const voronoiMesh = new Three.BufferGeometry();
+        voronoiMesh.setAttribute('position', new Three.BufferAttribute(new Float32Array(vertices), 3));
+        voronoiMesh.setAttribute('color', new Three.BufferAttribute(new Float32Array(colors), 3));
 
-        const vmesh = new Three.Mesh(new Three.BufferGeometry().setFromPoints(vtpoints), new Three.MeshNormalMaterial({ flatShading: true }));
-        vmesh.position.set(0, 200, 0);
+        const vmesh = new Three.Mesh(voronoiMesh, new Three.MeshBasicMaterial({vertexColors: true}));
+        vmesh.position.set(-100, 0, 0);
+        vmesh.rotation.y += Math.PI / 2;
         vmesh.scale.setScalar(50);
         scene.add(vmesh);
 
@@ -799,9 +824,10 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
                 tinyAtmosphereMaterial.uniforms.vPlanetWorldOrigin.value = tinyWorldPosition;
                 giantAtmosphereMaterial.uniforms.vPlanetWorldOrigin.value = giantWorldPosition;
 
-                pCamera.position.set(tinyWorldPosition.x, tinyWorldPosition.y, tinyWorldPosition.z);
-                pCamera.position.y += 60;
-                pCamera.lookAt(tinyWorldPosition);
+                cameraGroup.rotation.z += Math.PI / 5000 * delta;
+                //pCamera.position.set(tinyWorldPosition.x, tinyWorldPosition.y, tinyWorldPosition.z);
+                //pCamera.position.y += 60;
+                pCamera.lookAt(new Three.Vector3(0, 0, 0));
                 pCamera.updateProjectionMatrix();
 
                 mainView.render();
