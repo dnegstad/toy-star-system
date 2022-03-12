@@ -27,6 +27,7 @@ import { AtmosphereMaterialV2 } from '../Materials/AtmosphereMaterialV2';
 import { cartesianToSpherical, pointGenerator, sphericalToCartesian, ThreeVoronoi } from '../Geometries/ThreeVoronoi';
 import { number } from 'zod';
 import { geoRotation } from 'd3-geo';
+import { randInt } from 'three/src/math/MathUtils';
 
 type StarMapProps = {
     machine: ActorRefFrom<StarMapMachine>;
@@ -561,7 +562,7 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
             4,5,6,    6,7,4
         ];
 
-        const detail = 8;
+        const detail = 10;
         const polyhedron = new Three.Mesh(new Three.PolyhedronBufferGeometry(verticesOfCube, indicesOfFaces, 1, detail), new Three.MeshNormalMaterial({ flatShading: true }));
         polyhedron.position.set(200, 0, 0);
         polyhedron.scale.setScalar(50);
@@ -596,13 +597,41 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
         const vertices = new Array<number>();
 
         const vt = new ThreeVoronoi(new Array<number>().concat(...Object.values(points)));
+
+        const cells = new Set<number>();
+        while (cells.size < 10) {
+            cells.add(randInt(0, vt.points.count - 1));
+        }
+
+        const plates = new Int32Array(vt.points.count);
+        plates.fill(-1);
+        const cellQueue = Array.from(cells);
+        for (let r of cellQueue) {
+            plates[r] = r;
+        }
+        for (let queueOut = 0; queueOut < cellQueue.length; queueOut++) {
+            const actualCell = randInt(queueOut, cellQueue.length);
+            const currentCellIndex = cellQueue[actualCell];
+            cellQueue[actualCell] = cellQueue[queueOut];
+            const neighborCells = vt.getNeighbors(currentCellIndex);
+            for (let neighbor of neighborCells) {
+                if (plates[neighbor] === -1) {
+                    plates[neighbor] = plates[currentCellIndex];
+                    cellQueue.push(neighbor);
+                }
+            }
+        }
+
+        const plateColors: Record<number, [number, number, number]> = {};
+
+        for (let plate of cells) {
+            plateColors[plate] = [Math.random(), Math.random(), Math.random()];
+        }
+
         vt.forEachVoronoiCell((p, v) => {
             const point = vt.point(p);
 
-            console.log(point, v);
-            const r = Math.random();
-            const g = Math.random();
-            const b = Math.random();
+            const [r, g, b] = plateColors[plates[p]];
 
             for (let i = 0; i < v.length; i++) {
                 const next = i + 1 < v.length ? i + 1 : 0;

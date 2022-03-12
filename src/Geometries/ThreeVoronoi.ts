@@ -178,7 +178,7 @@ export class ThreeVoronoi {
         return (e/3) | 0;
     }
 
-    circulateCells(index: number) {
+    getNeighbors(index: number) {
         const firstEdge = this._cellHalfedgeIndex[index];
         let incoming = firstEdge;
         const cells = new Array<number>();
