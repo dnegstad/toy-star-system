@@ -3,6 +3,7 @@ import alea from 'alea';
 import { geoCentroid, geoDistance, GeoProjection, geoRotation, geoStereographic } from 'd3-geo';
 import Delaunator from 'delaunator';
 import { BufferAttribute, Float32BufferAttribute, Float64BufferAttribute, Vector3 } from 'three';
+import { fibonacciSphere } from './fibonacciSphere';
 
 const TAU = Math.PI * 2;
 const RADIANS = Math.PI / 180;
@@ -77,36 +78,39 @@ export const radiansToCartesian = ([lambda, phi]: SphericalPoint): CartesianPoin
 
 export class ThreeVoronoi {
     constructor(points: ArrayLike<number> | BufferAttribute) {
-        this._points = points instanceof BufferAttribute ? points : new Float32BufferAttribute(points, 3);
-        const numPoints = this._points.count;
-        const geoPoints = new Float64Array(numPoints * 2);
+        this._sphericalPoints = points instanceof BufferAttribute ? points : new Float32BufferAttribute(points, 2);
+        const numPoints = this._sphericalPoints.count;
+        const cartesianPoints = new Float64Array(numPoints * 3);
         const projectedPoints = new Float64Array(numPoints * 2 - 2);
 
-        const sphericalCandidate = cartesianToSpherical([this._points.getX(numPoints - 1), this._points.getY(numPoints - 1), this._points.getZ(numPoints - 1)]);
+        const sphericalCandidate: SphericalPoint = [this._sphericalPoints.getX(numPoints - 1), this._sphericalPoints.getY(numPoints - 1)];
 
         const rotation = geoRotation(sphericalCandidate);
         const projection = geoStereographic().translate([0,0]).rotate(rotation.invert([180, 0]));
 
         for (let i = 0; i < numPoints; i++) {
-            const geoPoint = cartesianToSpherical([this._points.getX(i), this._points.getY(i), this._points.getZ(i)]);
+            const sphericalPoint: SphericalPoint = [this._sphericalPoints.getX(i), this._sphericalPoints.getY(i)];
+            const cartesianPoint = sphericalToCartesian(sphericalPoint);
             // store the points cartesian representation since we are generating them anyway
-            geoPoints.set(geoPoint, i * 2);
+            cartesianPoints.set(cartesianPoint, i * 2);
             // project all points but the one at infinity
             if (i < numPoints - 1) {
-                projectedPoints.set(projection(geoPoint) as SphericalPoint, i * 2);
+                projectedPoints.set(projection(sphericalPoint) as SphericalPoint, i * 2);
             }
         }
 
-        this._geoPoints = new Float64BufferAttribute(geoPoints, 2);
+        this._cartesianPoints = new Float64BufferAttribute(cartesianPoints, 3);
 
         const delaunay = new Delaunator(projectedPoints);
 
+        // Calcluate the patched triangles and halfedges to wrap the sphere
         const { triangles, halfedges } = ThreeVoronoi.patchInfinity(delaunay, numPoints - 1);
 
         this._triangles = triangles;
         this._halfedges = halfedges;
 
-        this._cellHalfedgeIndex = new Int32Array(this._points.count);
+        // Cache the first half-edge for a given cell to speed up iteration
+        this._cellHalfedgeIndex = new Int32Array(this._cartesianPoints.count);
         for (let e = 0; e < this._triangles.length; e++) {
             const endpoint = this._triangles[nextHalfEdge(e)];
             if (this._cellHalfedgeIndex[endpoint] === 0 || this._cellHalfedgeIndex[e] === -1) {
@@ -114,6 +118,7 @@ export class ThreeVoronoi {
             }
         }
 
+        // Cache the triangle circumcenters for voronoi cells
         const centers = new Float64Array(triangles.length);
         let index = 0;
         for (let triangle of this.triangles()) {
@@ -178,6 +183,10 @@ export class ThreeVoronoi {
         return (e/3) | 0;
     }
 
+    static makeDistributedPoints(count: number, jitter: number) {
+        return new ThreeVoronoi(new Float64Array(new Array<number>().concat(...fibonacciSphere(count, jitter))));
+    }
+
     getNeighbors(index: number) {
         const firstEdge = this._cellHalfedgeIndex[index];
         let incoming = firstEdge;
@@ -191,18 +200,15 @@ export class ThreeVoronoi {
         return cells;
     }
 
-    static makeDistributedPoints(count: number, iterations: number = 2, seed?: string) {
-        return new ThreeVoronoi(new Float64Array(pointBuilder(count, iterations, seed)));
-    }
-
     point(index: number): Vector3 {
-        return new Vector3(this._points.getX(index), this._points.getY(index), this._points.getZ(index));
+        return new Vector3(this._cartesianPoints.getX(index), this._cartesianPoints.getY(index), this._cartesianPoints.getZ(index));
     }
 
-    get points() {
-        return this._points;
+    get rawPoints() {
+        return this._cartesianPoints;
     }
 
+    // Get a three.js ready triangle for a given index
     triangle(index: number): Array<Vector3> {
         return [
             this.point(this._triangles[index * 3]),
@@ -211,6 +217,7 @@ export class ThreeVoronoi {
         ];
     }
 
+    // Iterate over the triangles in the graph
     *triangles() {
         for (let i = 0; i < this._triangles.length; i += 3) {
             yield [
@@ -221,29 +228,37 @@ export class ThreeVoronoi {
         }
     }
 
+    // Access the raw triangle data
     get rawTriangles() {
         return this._triangles;
     }
 
+    // Access the raw halfedge data
     get rawHalfEdges() {
         return this._halfedges;
     }
 
+    // Get the Vector3 for a given triangle's circumcenter
     center(index: number): Vector3 {
         return new Vector3(this._cellVertices.getX(index), this._cellVertices.getY(index), this._cellVertices.getZ(index));
     }
 
+    // Raw cached circumcenters
     get rawCenters() {
         return this._cellVertices;
     }
 
-    forEachVoronoiCell(callback: (p: number, vertices: Array<Vector3>) => void) {
-        for (let cell of this.voronoiCells()) {
-            callback(cell.point, cell.vertices);
+    // For each voronoi cell, execute a callback
+    forEachCell(callback: (p: number, vertices: Array<Vector3>) => void | boolean) {
+        for (let cell of this.cells()) {
+            if (callback(cell.point, cell.vertices) === false) {
+                return;
+            }
         }
     }
 
-    *voronoiCells() {
+    // Iterate over the voronoi cells
+    *cells() {
         const seen = new Set<number>();
 
         for (let e = 0; e < this._triangles.length; e++) {
@@ -258,6 +273,7 @@ export class ThreeVoronoi {
         }
     }
 
+    // Build a renderable triangle mesh from the voronoi polygons
     get voronoiMesh() {
         const geometry = new Array<Vector3>();
             
@@ -275,16 +291,12 @@ export class ThreeVoronoi {
         return geometry;
     }
 
-    private readonly _points: BufferAttribute;
-    private readonly _geoPoints: BufferAttribute;
+    private readonly _cartesianPoints: BufferAttribute;
+    private readonly _sphericalPoints: BufferAttribute;
     private readonly _cellVertices: BufferAttribute;
     private readonly _triangles: Uint32Array;
     private readonly _halfedges: Int32Array;
     private readonly _cellHalfedgeIndex: Int32Array;
-}
-
-const centroid = (ax: number, ay: number, az: number, bx: number, by: number, bz: number, cx: number, cy: number, cz: number): [number, number, number] => {
-    return [(ax+bx+cx)/3, (ay+by+cy)/3, (az+bz+cz)/3]
 }
 
 export const randomRange = (min: number, max: number, rng?: () => number) => {
@@ -363,21 +375,4 @@ export function* pointGenerator(total: number, iterations: number, minDistance: 
     }
 
     return points;
-}
-
-const dlon = Math.PI * (3 - Math.sqrt(5));
-const generateFibonacciSphere = (count: number, jitter: number) => {
-    const points = new Array<number>();
-
-    const dz = 2 / count;
-    let z = 1 - dz / 2;
-
-    let lon = 0;
-    for (let k = 0; k < count; k++) {
-        const r = Math.sqrt(1 - z * z);
-        
-        z = 
-        
-        lon = lon + dlon;
-    }
 }

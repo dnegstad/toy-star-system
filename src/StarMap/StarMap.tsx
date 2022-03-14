@@ -10,6 +10,7 @@ import { TexturePass } from 'three/examples/jsm/postprocessing/TexturePass';
 import { FXAAShader } from 'three/examples/jsm/shaders/FXAAShader';
 import { SSAARenderPass } from 'three/examples/jsm/postprocessing/SSAARenderPass';
 import { TAARenderPass } from 'three/examples/jsm/postprocessing/TAARenderPass';
+import { ConvexHull, VertexNode } from 'three/examples/jsm/math/ConvexHull';
 import * as Three from 'three/src/Three';
 import { ActorRefFrom } from 'xstate';
 import { db, PlanetRecord, PlanetSize, PlanetType, StarSize, StarSystemRecord, StarType } from '../Data/Database';
@@ -28,6 +29,7 @@ import { cartesianToSpherical, pointGenerator, sphericalToCartesian, ThreeVorono
 import { number } from 'zod';
 import { geoRotation } from 'd3-geo';
 import { randInt } from 'three/src/math/MathUtils';
+import { threeFibonacciSphere } from '../Geometries/fibonacciSphere';
 
 type StarMapProps = {
     machine: ActorRefFrom<StarMapMachine>;
@@ -543,11 +545,6 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
         const blueGlow = new Three.Mesh(blue.geometry, blueGlowMaterial);
         scene.add(blue, blueGlow);
 
-        /*const plane = new Three.Mesh(new Three.PlaneBufferGeometry(1, 1, 25, 25), new Three.MeshBasicMaterial());
-        plane.scale.setScalar(100);
-        plane.position.set(0, 0, 0);
-        scene.add(plane);*/
-
         const verticesOfCube = [
             -1,-1,-1,    1,-1,-1,    1, 1,-1,    -1, 1,-1,
             -1,-1, 1,    1,-1, 1,    1, 1, 1,    -1, 1, 1,
@@ -562,55 +559,55 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
             4,5,6,    6,7,4
         ];
 
-        const detail = 10;
-        const polyhedron = new Three.Mesh(new Three.PolyhedronBufferGeometry(verticesOfCube, indicesOfFaces, 1, detail), new Three.MeshNormalMaterial({ flatShading: true }));
-        polyhedron.position.set(200, 0, 0);
-        polyhedron.scale.setScalar(50);
-        scene.add(polyhedron);
-
-        const icoso = new Three.Mesh(new Three.IcosahedronBufferGeometry(1, detail), new Three.MeshNormalMaterial({ flatShading: true }));
-        icoso.position.set(-200, 0, 0);
-        icoso.scale.setScalar(50);
-        //scene.add(icoso);
-
-        const position = icoso.geometry.getAttribute('position');
-        const points: Record<string, [number, number, number]> = {};
-        const maxJitter = 6;
-        for (let i = 0; i < position.count; i++) {
-            const x = position.getX(i);
-            const y = position.getY(i);
-            const z = position.getZ(i);
-
-            const cacheIndex = `${x}:${y}:${z}`;
-
-            if (points[cacheIndex] !== undefined) {
-                continue;
-            }
-
-            const point = cartesianToSpherical([x, y, z]);
-            const [x2, y2, z2] = sphericalToCartesian(geoRotation([Math.random() * maxJitter - maxJitter / 2, Math.random() * maxJitter - maxJitter / 2])(geoRotation([Math.random() * maxJitter - maxJitter / 2, Math.random() * maxJitter - maxJitter / 2])(point)));
-
-            points[cacheIndex] = [x2, y2, z2];
-        }
-
         const colors = new Array<number>();
         const vertices = new Array<number>();
 
-        const vt = new ThreeVoronoi(new Array<number>().concat(...Object.values(points)));
+        console.time('convexhull');
+        const spherePoints = threeFibonacciSphere(100, 0.75);
+        const hull = new ConvexHull().setFromPoints(spherePoints);
+        const cells2 = new Array<{vertex: Three.Vector3, polygon: Array<Three.Vector3>}>();
+        const p = new Set<VertexNode>();
+        for (let face of hull.faces) {
+            let edge = face.edge;
+            do {
+                if (!p.has(face.edge.prev.vertex)) {
+                    p.add(face.edge.prev.vertex);
+                    let edge = face.edge;
+                    let nextFace = face;
+                    const cellVertices = new Array<Three.Vector3>();
+                    do {
+                        cellVertices.push(nextFace.midpoint);
 
+                        nextFace = edge.twin.face;
+                        edge = edge.twin.next;
+                    } while (nextFace !== null && nextFace !== face);
+                    cells2.push({vertex: face.edge.prev.vertex.point, polygon: cellVertices});
+                }
+                edge = edge.next;
+            } while (edge !== null && edge !== face.edge);
+        }
+        console.timeEnd('convexhull');
+        console.time('threevoronoi');
+        const vt = ThreeVoronoi.makeDistributedPoints(100, 0.75);
         const cells = new Set<number>();
-        while (cells.size < 10) {
-            cells.add(randInt(0, vt.points.count - 1));
+        while (cells.size < 12) {
+            cells.add(randInt(0, vt.rawPoints.count - 1));
         }
 
-        const plates = new Int32Array(vt.points.count);
+        const plateData: Record<number, {memberCells: Set<number>, neighborPlates: Set<number>, color: Three.Color}> = {};
+        const plates = new Int32Array(vt.rawPoints.count);
         plates.fill(-1);
         const cellQueue = Array.from(cells);
         for (let r of cellQueue) {
             plates[r] = r;
+            plateData[r] = {
+                memberCells: new Set<number>([r]),
+                neighborPlates: new Set<number>(),
+                color: new Three.Color(Math.random() * 0.5 + 0.5, Math.random() * 0.5 + 0.5, Math.random() * 0.5 + 0.5),
+            };
         }
         for (let queueOut = 0; queueOut < cellQueue.length; queueOut++) {
-            const actualCell = randInt(queueOut, cellQueue.length);
+            const actualCell = randInt(queueOut, cellQueue.length - 1);
             const currentCellIndex = cellQueue[actualCell];
             cellQueue[actualCell] = cellQueue[queueOut];
             const neighborCells = vt.getNeighbors(currentCellIndex);
@@ -618,20 +615,41 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
                 if (plates[neighbor] === -1) {
                     plates[neighbor] = plates[currentCellIndex];
                     cellQueue.push(neighbor);
+                    plateData[plates[currentCellIndex]].memberCells.add(neighbor);
+                } else {
+                    plateData[plates[currentCellIndex]].neighborPlates.add(plates[neighbor]);
                 }
+            }
+        }
+
+        for (let plate of cells) {
+            if (plateData[plate].neighborPlates.size === 1) {
+                const parentPlate = [...plateData[plate].neighborPlates][0];
+                plateData[plate].memberCells.forEach((cell) => {
+                    plates[cell] = parentPlate;
+                    plateData[parentPlate].memberCells.add(cell);
+                });
+                console.log('Removed isolated plate', plate);
+                delete plateData[plate];
             }
         }
 
         const plateColors: Record<number, [number, number, number]> = {};
 
-        for (let plate of cells) {
-            plateColors[plate] = [Math.random(), Math.random(), Math.random()];
-        }
+        const plate = [...cells][0];
+        const secondPlate = [...cells][1];
 
-        vt.forEachVoronoiCell((p, v) => {
+        vt.forEachCell((p, v) => {
             const point = vt.point(p);
 
-            const [r, g, b] = plateColors[plates[p]];
+            /*if (plates[p] !== plate) {
+                return;
+            }*/
+
+            if (plateData[plates[p]] === undefined) {
+                console.log('undefined', plateData, plates, p);
+            }
+            const [r, g, b] = plateData[plates[p]].color.toArray();
 
             for (let i = 0; i < v.length; i++) {
                 const next = i + 1 < v.length ? i + 1 : 0;
@@ -642,12 +660,7 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
                 colors.push(r, g, b);
             }
         });
-        const vtpoints = new Array<Three.Vector3>();
-        for (let triangle of vt.triangles()) {
-            triangle.forEach((point) => {
-                vtpoints.push(point);
-            });
-        }
+        console.timeEnd('threevoronoi');
 
         const voronoiMesh = new Three.BufferGeometry();
         voronoiMesh.setAttribute('position', new Three.BufferAttribute(new Float32Array(vertices), 3));
@@ -853,10 +866,10 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
                 tinyAtmosphereMaterial.uniforms.vPlanetWorldOrigin.value = tinyWorldPosition;
                 giantAtmosphereMaterial.uniforms.vPlanetWorldOrigin.value = giantWorldPosition;
 
-                cameraGroup.rotation.z += Math.PI / 5000 * delta;
-                //pCamera.position.set(tinyWorldPosition.x, tinyWorldPosition.y, tinyWorldPosition.z);
-                //pCamera.position.y += 60;
-                pCamera.lookAt(new Three.Vector3(0, 0, 0));
+                //cameraGroup.rotation.z += Math.PI / 5000 * delta;
+                pCamera.position.copy(tinyWorldPosition);
+                pCamera.position.y += 100;
+                pCamera.lookAt(tinyWorldPosition);
                 pCamera.updateProjectionMatrix();
 
                 mainView.render();
