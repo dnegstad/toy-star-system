@@ -11,6 +11,7 @@ import { FXAAShader } from 'three/examples/jsm/shaders/FXAAShader';
 import { SSAARenderPass } from 'three/examples/jsm/postprocessing/SSAARenderPass';
 import { TAARenderPass } from 'three/examples/jsm/postprocessing/TAARenderPass';
 import { ConvexHull, VertexNode } from 'three/examples/jsm/math/ConvexHull';
+import { SimplexNoise } from 'three/examples/jsm/math/SimplexNoise';
 import * as Three from 'three/src/Three';
 import { ActorRefFrom } from 'xstate';
 import { db, PlanetRecord, PlanetSize, PlanetType, StarSize, StarSystemRecord, StarType } from '../Data/Database';
@@ -20,16 +21,15 @@ import { Scene } from '../Scene/Scene';
 import { InstancedStars, System, SystemDetail } from '../System/System';
 import './StarMap.css';
 import { EffectView } from './View';
-import { TerrainFaceBufferGeometry } from '../Geometries/SphericalCube';
 import { ScaledTextureMaterial } from '../Materials/ScaledTextureMaterial';
-import { AtmosphereMaterial, AtmosphereStar } from '../Materials/AtmosphereMaterial';
 import { GlowMaterial } from '../Materials/GlowMaterial';
-import { AtmosphereMaterialV2 } from '../Materials/AtmosphereMaterialV2';
-import { cartesianToSpherical, pointGenerator, sphericalToCartesian, ThreeVoronoi } from '../Geometries/ThreeVoronoi';
+import { AtmosphereMaterialV2, AtmosphereStar } from '../Materials/AtmosphereMaterialV2';
+import { ThreeVoronoi } from '../Geometries/ThreeVoronoi';
+import { lerp, randInt } from 'three/src/math/MathUtils';
+import { geoDistance, geoRotation } from 'd3-geo';
 import { number } from 'zod';
-import { geoRotation } from 'd3-geo';
-import { randInt } from 'three/src/math/MathUtils';
-import { threeFibonacciSphere } from '../Geometries/fibonacciSphere';
+
+const RADIANS = Math.PI / 180;
 
 type StarMapProps = {
     machine: ActorRefFrom<StarMapMachine>;
@@ -499,11 +499,13 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
         oCamera.updateProjectionMatrix();
 
         const cameraGroup = new Three.Group();
-        const pCamera = new Three.PerspectiveCamera(40, aspectRatio, 10, 5000);
-        pCamera.position.set(0, -Math.tan(Math.PI / 3) * 500, 500);
-        pCamera.lookAt(0, 0, 0);
+        const pCamera = new Three.PerspectiveCamera(40, aspectRatio, 10, 1000);
+        pCamera.position.set(-100, -300, 0);
+        pCamera.lookAt(-100, 0, 0);
+        //pCamera.position.set(0, -Math.tan(Math.PI / 3) * 500, 500);
+        //pCamera.lookAt(0, 0, 0);
         pCamera.updateProjectionMatrix();
-        cameraGroup.add(pCamera);
+        //cameraGroup.add(pCamera);
 
         let mainCamera: Three.Camera = oCamera;
 
@@ -536,7 +538,7 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
         const blue = new Three.Mesh(geometry.stars.medium, materials.stars.orange);
         blue.position.set(0, 0, 0);
 
-        scene.add(pointLight, tinyGroup, giantGroup, ambientLight);
+        //scene.add(pointLight, tinyGroup, giantGroup, ambientLight);
 
         const blueGlowMaterial = new GlowMaterial({
             color: new Three.Color('#fd8d24'),
@@ -559,11 +561,8 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
             4,5,6,    6,7,4
         ];
 
-        const colors = new Array<number>();
-        const vertices = new Array<number>();
-
-        console.time('convexhull');
-        const spherePoints = threeFibonacciSphere(100, 0.75);
+        /*console.time('convexhull');
+        const spherePoints = threeFibonacciSphere(1000, 0.75);
         const hull = new ConvexHull().setFromPoints(spherePoints);
         const cells2 = new Array<{vertex: Three.Vector3, polygon: Array<Three.Vector3>}>();
         const p = new Set<VertexNode>();
@@ -586,78 +585,257 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
                 edge = edge.next;
             } while (edge !== null && edge !== face.edge);
         }
-        console.timeEnd('convexhull');
+        console.timeEnd('convexhull');*/
         console.time('threevoronoi');
-        const vt = ThreeVoronoi.makeDistributedPoints(100, 0.75);
-        const cells = new Set<number>();
-        while (cells.size < 12) {
+        const vt = ThreeVoronoi.makeDistributedPoints(5000, 0.25);
+        let cells = new Set<number>();
+        while (cells.size < 30 && cells.size < vt.rawPoints.count) {
             cells.add(randInt(0, vt.rawPoints.count - 1));
         }
 
-        const plateData: Record<number, {memberCells: Set<number>, neighborPlates: Set<number>, color: Three.Color}> = {};
+        console.time('create initial plates');
+
+        // Collection of cells with neighbors
+        const neighborCells = new Set<number>();
+        const plateData: Record<number, {memberCells: Set<number>, neighborPlates: Set<number>, motion: Three.Vector2, isWater: boolean}> = {};
         const plates = new Int32Array(vt.rawPoints.count);
         plates.fill(-1);
         const cellQueue = Array.from(cells);
-        for (let r of cellQueue) {
-            plates[r] = r;
-            plateData[r] = {
-                memberCells: new Set<number>([r]),
+        cells.forEach((cell) => {
+            plates[cell] = cell;
+            plateData[cell] = {
+                memberCells: new Set<number>([cell]),
                 neighborPlates: new Set<number>(),
-                color: new Three.Color(Math.random() * 0.5 + 0.5, Math.random() * 0.5 + 0.5, Math.random() * 0.5 + 0.5),
+                motion: new Three.Vector2().random().normalize(),
+                isWater: false,
             };
-        }
-        for (let queueOut = 0; queueOut < cellQueue.length; queueOut++) {
-            const actualCell = randInt(queueOut, cellQueue.length - 1);
+        });
+
+        let growQueue = new Array<number>();
+        for (let queueOut = 0; queueOut < cellQueue.length + growQueue.length; queueOut++) {
+            const actualCell = queueOut < cellQueue.length ? randInt(queueOut, cellQueue.length - 1) : randInt(queueOut, cellQueue.length + growQueue.length - 1);
+            cellQueue.push(...growQueue);
             const currentCellIndex = cellQueue[actualCell];
             cellQueue[actualCell] = cellQueue[queueOut];
             const neighborCells = vt.getNeighbors(currentCellIndex);
+            growQueue = new Array<number>();
             for (let neighbor of neighborCells) {
                 if (plates[neighbor] === -1) {
                     plates[neighbor] = plates[currentCellIndex];
-                    cellQueue.push(neighbor);
+                    growQueue.push(neighbor);
                     plateData[plates[currentCellIndex]].memberCells.add(neighbor);
-                } else {
+                } else if (plates[currentCellIndex] !== plates[neighbor]) {
                     plateData[plates[currentCellIndex]].neighborPlates.add(plates[neighbor]);
                 }
             }
         }
+        console.timeEnd('create initial plates');
 
-        for (let plate of cells) {
+        const MINIMUM_CELLS = 5;
+
+        console.time('purge small plates');
+        cells = [...cells].sort((a, b) => plateData[a].memberCells.size - plateData[b].memberCells.size).reduce((allPlates, plate) => {
+            if (plateData[plate].memberCells.size < MINIMUM_CELLS) {
+                const {smallest} = [...plateData[plate].neighborPlates].reduce(({smallest, size}, neighbor) => {
+                    if (plateData[neighbor].memberCells.size < size) {
+                        return {
+                            smallest: neighbor,
+                            size: plateData[neighbor].memberCells.size,
+                        };
+                    } else {
+                        return {
+                            smallest,
+                            size,
+                        };
+                    }
+                }, {smallest: -1, size: Number.MAX_SAFE_INTEGER});
+
+                console.log('Removed small plate', plate, plateData[plate].memberCells.size);
+                console.log('Assigned to plate', smallest, plateData[smallest].memberCells.size);
+
+                plateData[plate].memberCells.forEach((cell) => {
+                    plates[cell] = smallest;
+                    plateData[smallest].memberCells.add(cell);
+                });
+
+                plateData[plate].neighborPlates.forEach((neighbor) => {
+                    plateData[neighbor].neighborPlates.delete(plate);
+                    if (neighbor !== smallest) {
+                        plateData[neighbor].neighborPlates.add(smallest);
+                    }
+                });
+
+                delete plateData[plate];
+            } else {
+                allPlates.add(plate);
+            }
+
+            return allPlates;
+        }, new Set<number>());
+        console.timeEnd('purge small plates');
+
+        console.time('purge isolated plates');
+        cells = [...cells].reduce((allPlates, plate) => {
             if (plateData[plate].neighborPlates.size === 1) {
                 const parentPlate = [...plateData[plate].neighborPlates][0];
                 plateData[plate].memberCells.forEach((cell) => {
                     plates[cell] = parentPlate;
                     plateData[parentPlate].memberCells.add(cell);
                 });
-                console.log('Removed isolated plate', plate);
+
+                // Remove ourselves from the new parent plate's list of neighbors
+                plateData[parentPlate].neighborPlates.delete(plate);
+
                 delete plateData[plate];
+                console.log('Removed isolated plate', plate);
+            } else {
+                allPlates.add(plate);
+            }
+
+            return allPlates;
+        }, new Set<number>());
+
+        let waterCells = 0;
+        const sortedCells = [...cells].sort((a, b) => plateData[a].memberCells.size - plateData[b].memberCells.size);
+        for (let i = 0, j = sortedCells.length - 1; i <= j; i++, j--) {
+            if (waterCells + plateData[sortedCells[j]].memberCells.size < plates.length * 0.7) {
+                plateData[sortedCells[j]].isWater = true;
+                waterCells += plateData[sortedCells[j]].memberCells.size;
+            }
+
+            if (i !== j && waterCells + plateData[sortedCells[i]].memberCells.size < plates.length * 0.7) {
+                plateData[sortedCells[i]].isWater = true;
+                waterCells += plateData[sortedCells[i]].memberCells.size;
             }
         }
 
-        const plateColors: Record<number, [number, number, number]> = {};
+        console.timeEnd('purge isolated plates');
 
-        const plate = [...cells][0];
-        const secondPlate = [...cells][1];
+        console.log('water', waterCells, waterCells / vt.rawPoints.count);
+        console.log('land', vt.rawPoints.count - waterCells, 1 - waterCells / vt.rawPoints.count);
+
+        const terrainCells = new Set<number>();
+        while (terrainCells.size < 12 && terrainCells.size < vt.rawPoints.count) {
+            terrainCells.add(randInt(0, vt.rawPoints.count - 1));
+        }
+
+        const terrain = new Int32Array(vt.rawPoints.count);
+        terrain.fill(-1);
+
+        const landId = 0;
+        const waterId = 1;
+        const terrainQueue = Array.from(terrainCells);
+        terrainQueue.forEach((r) => {
+            terrain[r] = Math.random() > 0.3 ? waterId : landId;
+        });
+        for (let queueOut = 0; queueOut < terrainQueue.length; queueOut++) {
+            const actualCell = randInt(queueOut, terrainQueue.length - 1);
+            const currentCellIndex = terrainQueue[actualCell];
+            terrainQueue[actualCell] = terrainQueue[queueOut];
+            const neighborCells = vt.getNeighbors(currentCellIndex);
+            for (let neighbor of neighborCells) {
+                if (terrain[neighbor] === -1) {
+                    terrain[neighbor] = terrain[currentCellIndex];
+                    terrainQueue.push(neighbor);
+                }
+            }
+        }
+
+        const colors = new Array<number>();
+        const vertices = new Array<number>();
+
+        const noise = new SimplexNoise();
+        const baseDensity = (lambda: number, phi: number) => {
+            return (noise.noise3d(Math.cos(lambda * RADIANS), Math.sin(lambda * RADIANS), phi * RADIANS) + 1.0) / 2.0;
+        }
+
+        const baseTemperature = (lambda: number, phi: number) => {
+            return lerp(0, 1, Math.min(1, Math.max(0, (90 - Math.abs(phi)) / 120)));
+        }
 
         vt.forEachCell((p, v) => {
             const point = vt.point(p);
 
-            /*if (plates[p] !== plate) {
-                return;
-            }*/
-
             if (plateData[plates[p]] === undefined) {
                 console.log('undefined', plateData, plates, p);
             }
-            const [r, g, b] = plateData[plates[p]].color.toArray();
+
+            const platePoint: [number, number] = [vt.rawSphericalPoints.getX(p), vt.rawSphericalPoints.getY(p)];
+            const plateMovement = geoRotation(new Three.Vector2().copy(plateData[plates[p]].motion).toArray());
+
+            const isOcean = plateData[plates[p]].isWater;
+            let density = baseDensity(platePoint[0], platePoint[1]);
+            density = isOcean ? density * 0.6 + 0.3 : density * 0.25 + 0.05;
+
+            let mostImpact: number = Number.MIN_SAFE_INTEGER;
+            let modifier: number = 0;
+            const neighbors = vt.getNeighbors(p);
+            neighbors.forEach((neighbor) => {
+                // If our neighbor is on a different plate
+                if (plates[neighbor] !== plates[p]) {
+                    const neighborPoint: [number, number] = [vt.rawSphericalPoints.getX(neighbor), vt.rawSphericalPoints.getY(neighbor)];
+                    if (plateData[plates[neighbor]] === undefined) {
+                        console.log(p, neighbor, plates[neighbor], plateData);
+                    }
+                    const neighborMovement = geoRotation(new Three.Vector2().copy(plateData[plates[neighbor]].motion).toArray());
+                    const neighborDensity = baseDensity(neighborPoint[0], neighborPoint[1]);
+
+                    const distance = geoDistance(platePoint, neighborPoint);
+                    const newDistance = geoDistance(plateMovement(platePoint), neighborMovement(neighborPoint));
+
+                    if (distance - newDistance > mostImpact) {
+                        mostImpact = distance - newDistance;
+                        if (distance - newDistance > 0.005) {
+                            if (density > neighborDensity) {
+                                modifier = 0.1;
+                            } else {
+                                modifier = -0.1;
+                            }
+                        }
+                    }
+                }
+            });
+
+            const newDensity = Math.min(1, Math.max(0, density + modifier));
+            if (density <= 0.3 && newDensity > 0.3) {
+                console.log('land to ocean');
+            } else if (density > 0.3 && newDensity <= 0.3) {
+                console.log('ocean to land');
+            }
+            density = newDensity;
+
+            let temperature = baseTemperature(platePoint[0], platePoint[1]);
+            if (density <= 0.25) {
+                temperature /= Math.exp(1.0 - density / 0.3);
+            }
+            //temperature *= lerp(0.8, 1.2, 1.0 - density / 1.0);
+
+            let color = new Three.Color(0, 0, 1);
+            if (density <= 0.3) {
+                color = new Three.Color(0, 1.0 - density / 0.3, 0);
+                //color = new Three.Color('brown');
+            } else {
+                color = new Three.Color(0, 0, 1.0 - density / 1.0);
+            }
+
+            if (temperature < 0.3) {
+                color = new Three.Color(1.0, 1.0, 1.0);
+            } if (temperature > 0.7 && density <= 0.3) {
+                color = new Three.Color(temperature / 1.0, temperature / 1.0, 0);
+            }
+
+            /*if (p === vt.rawPoints.count - 1) {
+                color = new Three.Color(0, 1, 0);
+            } else if (neighborsLastPlate) {
+                color = new Three.Color(1, 0, 0);
+            } else {
+                color = new Three.Color(0, 0, 1);
+            }*/
 
             for (let i = 0; i < v.length; i++) {
                 const next = i + 1 < v.length ? i + 1 : 0;
-                vertices.push(...v[i].toArray(), ...v[next].toArray(), ...point.toArray());
-            }
-
-            for (let c = 0; c < 3 * v.length; c++) {
-                colors.push(r, g, b);
+                colors.push(...color.toArray(), ...color.toArray(), ...color.toArray());
+                vertices.push(...new Three.Vector3().copy(v[next]).normalize().toArray(), ...new Three.Vector3().copy(v[i]).normalize().toArray(), ...new Three.Vector3().copy(point).normalize().toArray());
             }
         });
         console.timeEnd('threevoronoi');
@@ -666,9 +844,8 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
         voronoiMesh.setAttribute('position', new Three.BufferAttribute(new Float32Array(vertices), 3));
         voronoiMesh.setAttribute('color', new Three.BufferAttribute(new Float32Array(colors), 3));
 
-        const vmesh = new Three.Mesh(voronoiMesh, new Three.MeshBasicMaterial({vertexColors: true}));
+        const vmesh = new Three.Mesh(voronoiMesh, new Three.MeshBasicMaterial({vertexColors: true, wireframe: false, side: Three.FrontSide}));
         vmesh.position.set(-100, 0, 0);
-        vmesh.rotation.y += Math.PI / 2;
         vmesh.scale.setScalar(50);
         scene.add(vmesh);
 
@@ -857,6 +1034,7 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
                 tinyClouds.rotation.z += Math.PI * 2 / 20000 * delta;
                 tinyGroup.rotation.z += Math.PI * 2 / 42000 * delta;
                 giantGroup.rotation.z += Math.PI * 2 / 30000 * delta;
+                vmesh.rotation.z -= Math.PI / 20000 * delta;
 
                 const tinyWorldPosition = new Three.Vector3();
                 tinyAtmosphere.getWorldPosition(tinyWorldPosition);
@@ -867,10 +1045,10 @@ export const Renderer: React.FC<RendererProps> = ({canvas, machine}) => {
                 giantAtmosphereMaterial.uniforms.vPlanetWorldOrigin.value = giantWorldPosition;
 
                 //cameraGroup.rotation.z += Math.PI / 5000 * delta;
-                pCamera.position.copy(tinyWorldPosition);
-                pCamera.position.y += 100;
-                pCamera.lookAt(tinyWorldPosition);
-                pCamera.updateProjectionMatrix();
+                //pCamera.position.copy(tinyWorldPosition);
+                //pCamera.position.y += 100;
+                //pCamera.lookAt(tinyWorldPosition);
+                //pCamera.updateProjectionMatrix();
 
                 mainView.render();
             }

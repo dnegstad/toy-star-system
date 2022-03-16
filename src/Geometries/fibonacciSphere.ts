@@ -20,7 +20,7 @@ export const fibonacciSphere = (count: number, jitter: number) => {
         if (_randomLon[k] === undefined) _randomLon[k] = Math.random() - Math.random();
         latDeg += jitter * _randomLat[k] * (latDeg - Math.asin(Math.max(-1, z - dz * 2 * Math.PI * r / s)) * 180 / Math.PI);
         lonDeg += jitter * _randomLon[k] * (s/r * 180 / Math.PI);
-        latLongPoints.push([latDeg, lonDeg % 360.0]);
+        latLongPoints.push([lonDeg % 360.0, latDeg]);
         long += s/r;
     }
     return latLongPoints;

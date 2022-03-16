@@ -2,7 +2,7 @@
 import alea from 'alea';
 import { geoCentroid, geoDistance, GeoProjection, geoRotation, geoStereographic } from 'd3-geo';
 import Delaunator from 'delaunator';
-import { BufferAttribute, Float32BufferAttribute, Float64BufferAttribute, Vector3 } from 'three';
+import { BufferAttribute, Float32BufferAttribute, Float64BufferAttribute, Spherical, Vector3 } from 'three';
 import { fibonacciSphere } from './fibonacciSphere';
 
 const TAU = Math.PI * 2;
@@ -92,7 +92,7 @@ export class ThreeVoronoi {
             const sphericalPoint: SphericalPoint = [this._sphericalPoints.getX(i), this._sphericalPoints.getY(i)];
             const cartesianPoint = sphericalToCartesian(sphericalPoint);
             // store the points cartesian representation since we are generating them anyway
-            cartesianPoints.set(cartesianPoint, i * 2);
+            cartesianPoints.set(cartesianPoint, i * 3);
             // project all points but the one at infinity
             if (i < numPoints - 1) {
                 projectedPoints.set(projection(sphericalPoint) as SphericalPoint, i * 2);
@@ -113,7 +113,7 @@ export class ThreeVoronoi {
         this._cellHalfedgeIndex = new Int32Array(this._cartesianPoints.count);
         for (let e = 0; e < this._triangles.length; e++) {
             const endpoint = this._triangles[nextHalfEdge(e)];
-            if (this._cellHalfedgeIndex[endpoint] === 0 || this._cellHalfedgeIndex[e] === -1) {
+            if (this._cellHalfedgeIndex[endpoint] === 0 || this._halfedges[e] === -1) {
                 this._cellHalfedgeIndex[endpoint] = e;
             }
         }
@@ -122,7 +122,7 @@ export class ThreeVoronoi {
         const centers = new Float64Array(triangles.length);
         let index = 0;
         for (let triangle of this.triangles()) {
-            const circumcenter = new Vector3(0, 0, 0).add(triangle[0]).add(triangle[1]).add(triangle[2]).divideScalar(3).normalize();
+            const circumcenter = new Vector3().copy(triangle[0]).add(triangle[1]).add(triangle[2]).divideScalar(3).normalize();
             centers.set(circumcenter.toArray(), index * 3);
             index++;
         }
@@ -206,6 +206,14 @@ export class ThreeVoronoi {
 
     get rawPoints() {
         return this._cartesianPoints;
+    }
+
+    sphericalPoint(index: number): Spherical {
+        return new Spherical(1.0, this._sphericalPoints.getX(index), this._sphericalPoints.getY(index));
+    }
+
+    get rawSphericalPoints() {
+        return this._sphericalPoints;
     }
 
     // Get a three.js ready triangle for a given index
