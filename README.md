@@ -1,4 +1,10 @@
-# Getting Started with Create React App
+# Star System
+
+This is a toy I put together a few years back using three.js to play around with various concepts like atmosphere shaders, veroni generation, etc. in a React based app. I haven't touched it in a few years, so the dependencies are out of date, nothing is particularly optimized, and lots of features aren't implemented. All the app really does is spawn a handful of planets around a sun with a couple camera angles that can be swapped with `spacebar` and show off a pretty (but inefficient) atmosphere shader based on https://developer.nvidia.com/gpugems/gpugems2/part-ii-shading-lighting-and-shadows/chapter-16-accurate-atmospheric-scattering. 
+
+Some of the planet textures and background stars in the repo come from https://www.solarsystemscope.com/textures/, others were generated using https://www.texturesforplanets.com/.
+
+## Getting Started with Create React App
 
 This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
 
